@@ -1,0 +1,15 @@
+"""站點註冊表:依網域選 adapter。新增網站時 import 並加入 ADAPTERS。"""
+from urllib.parse import urlparse
+
+from .shuba69 import Shuba69
+
+ADAPTERS = [Shuba69]
+
+
+def get_adapter(url: str):
+    host = urlparse(url).netloc.lower()
+    for cls in ADAPTERS:
+        if host in cls.domains:
+            return cls()
+    supported = ", ".join(sorted({d for cls in ADAPTERS for d in cls.domains}))
+    raise ValueError(f"不支援的網站: {host}(目前支援: {supported})")
