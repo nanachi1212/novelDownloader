@@ -45,6 +45,7 @@ python novel_dl.py <網址> --start 100 --end 200   # 只下載第 100~200 章
 ## 支援網站
 
 - 69shuba.com(69书吧)
+- sunzhinan.com(醋溜儿文学) — 支持多頁章節自動縫接
 
 ### 新增其他網站
 

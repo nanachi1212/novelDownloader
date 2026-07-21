@@ -2,8 +2,9 @@
 from urllib.parse import urlparse
 
 from .shuba69 import Shuba69
+from .sunzhinan import SunzhinanAdapter
 
-ADAPTERS = [Shuba69]
+ADAPTERS = [Shuba69, SunzhinanAdapter]
 
 
 def get_adapter(url: str):
