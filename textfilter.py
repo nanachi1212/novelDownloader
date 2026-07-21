@@ -64,13 +64,13 @@ def apply_rules(text: str, rules) -> str:
     return "\n\n".join(kept)
 
 
-def drop_repeated(contents, min_len=3, ratio=0.3, min_hits=3):
+def drop_repeated(contents, min_len=1, ratio=0.3, min_hits=3):
     """跨章重複段落 = 網站宣傳/廣告樣板,自動移除。
 
-    同一段文字(≥min_len 字、含中英文字,純符號分隔線不算)出現在
-    ≥max(min_hits, 章數*ratio) 個章節就視為樣板;
-    短句(≤8 字)用更激進的偵測(≥2 章就刪),因為「推」這種單字
-    或「閱讀全文」型廣告如在多章重複肯定是宣傳。
+    同一段文字(≥min_len 字、含中英文字,純符號分隔線不算)出現在多章就視為樣板:
+    極短句(1-2字,如「推」):≥2 章就刪(抓廣告詞)
+    短句(3-8字):≥max(3, 30%) 刪(避免誤刪正常短句)
+    長句:≥max(min_hits, 30%) 刪
     回傳 (清理後 contents, 被移除的段落 list)。章數太少(<5)不啟用。
     """
     n = len(contents)
@@ -88,12 +88,18 @@ def drop_repeated(contents, min_len=3, ratio=0.3, min_hits=3):
 
     boiler = set()
     for p, c in counter.items():
-        # 極短句(≤5字,通常是廣告詞):≥2章就刪;
-        # 短句(6-8字):≥3 章或 ≥30%;長句:≥30% 或 ≥3 章
-        if len(p) <= 5:
+        plen = len(p)
+        # 極短詞(1-2字,如「推」「讀」):≥2章就刪(廣告詞);
+        # 短句(3-5字,如「閱讀全文」):≥2章就刪;
+        # 中短句(6-8字):≥3 章或 ≥30% 才刪(避免誤刪正常短句);
+        # 長句:≥30% 或 ≥3 章
+        if plen <= 2:
             if c >= 2:
                 boiler.add(p)
-        elif len(p) <= 8:
+        elif plen <= 5:
+            if c >= 2:
+                boiler.add(p)
+        elif plen <= 8:
             if c >= max(3, int(n * ratio)):
                 boiler.add(p)
         else:
