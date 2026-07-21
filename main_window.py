@@ -17,11 +17,13 @@ from PyQt6.QtWidgets import (
     QFileDialog,
     QMessageBox,
     QSpinBox,
+    QDialog,
 )
 from PyQt6.QtCore import QThread, pyqtSignal
 from PyQt6.QtGui import QFont
 
 from downloader_task import Cancelled, download_novel
+from textfilter import ensure_rules_file
 
 STATUS_LABEL = {
     "pending": "⏳ 等待",
@@ -163,6 +165,9 @@ class NovelDownloaderUI(QMainWindow):
         self.delay_input.setText("2.0")
         self.delay_input.setMaximumWidth(70)
         dir_layout.addWidget(self.delay_input)
+        self.rules_btn = QPushButton("過濾規則...")
+        self.rules_btn.clicked.connect(self.edit_rules)
+        dir_layout.addWidget(self.rules_btn)
         layout.addLayout(dir_layout)
 
         # --- 進度與日誌 ---
@@ -247,6 +252,33 @@ class NovelDownloaderUI(QMainWindow):
     def refresh_row(self, row, status):
         self.jobs[row]["status"] = status
         self.queue_list.item(row).setText(self.job_text(self.jobs[row]))
+
+    def edit_rules(self):
+        """編輯自訂過濾規則(filter_rules.txt),儲存後下一次下載生效。"""
+        path = ensure_rules_file()
+        dlg = QDialog(self)
+        dlg.setWindowTitle("自訂過濾規則")
+        dlg.resize(560, 420)
+        v = QVBoxLayout()
+        v.addWidget(QLabel(
+            "每行一條規則,命中的整段會從輸出移除:\n"
+            "  直接寫文字 = 段落包含該文字就移除;re: 開頭 = 正則;# 開頭 = 註解\n"
+            "儲存後下一次下載生效;已下載的書重跑一次即可(用快取,不會重抓)"))
+        editor = QTextEdit()
+        editor.setPlainText(path.read_text(encoding="utf-8"))
+        v.addWidget(editor)
+        h = QHBoxLayout()
+        h.addStretch()
+        save_btn = QPushButton("儲存")
+        cancel_btn = QPushButton("取消")
+        save_btn.clicked.connect(
+            lambda: (path.write_text(editor.toPlainText(), encoding="utf-8"), dlg.accept()))
+        cancel_btn.clicked.connect(dlg.reject)
+        h.addWidget(save_btn)
+        h.addWidget(cancel_btn)
+        v.addLayout(h)
+        dlg.setLayout(v)
+        dlg.exec()
 
     # --- 控制 ---
     def choose_directory(self):

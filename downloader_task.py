@@ -6,6 +6,7 @@ from pathlib import Path
 from fetcher import Fetcher
 from sites import get_adapter
 from sites.base import join_pages
+from textfilter import apply_rules, drop_repeated, load_rules
 
 
 class Cancelled(Exception):
@@ -73,7 +74,7 @@ def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
     cache = cache_root() / adapter.book_id(url)
     cache.mkdir(parents=True, exist_ok=True)
 
-    texts = []
+    results = []  # (章節標題, 內文)
     fetched = 0
     for n, (idx, ch) in enumerate(jobs, 1):
         if cancel_check and cancel_check():
@@ -99,8 +100,20 @@ def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
             cache_file.write_text(content, encoding="utf-8")
             fetched += 1
             fetcher.polite_sleep()
-        texts.append(f"{ch.title}\n\n{content}")
+        results.append((ch.title, content))
         callback("chapter", n, total, f"[{n}/{total}] {ch.title[:30]}")
+
+    # 合併前後處理(只動輸出,不動快取):自訂規則 → 跨章重複樣板自動偵測
+    rules = load_rules()
+    contents = [apply_rules(c, rules) for _, c in results]
+    if rules:
+        callback("filter", 0, 1, f"[過濾] 已套用 {len(rules)} 條自訂規則(filter_rules.txt)")
+    contents, removed = drop_repeated(contents)
+    if removed:
+        preview = "|".join(p[:25] for p in removed[:3])
+        callback("filter", 0, 1,
+                 f"[自動去重] 移除 {len(removed)} 條跨章重複的宣傳/廣告樣板,如: {preview}")
+    texts = [f"{t}\n\n{c}" for (t, _), c in zip(results, contents)]
 
     suffix = f"_第{lo}-{hi}章" if (start or end) else ""
     out = Path(output_dir) / f"{safe_filename(book.title)}{suffix}.txt"
