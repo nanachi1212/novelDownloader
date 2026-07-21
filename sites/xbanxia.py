@@ -25,19 +25,32 @@ class XbanxiaAdapter(SiteAdapter):
         """抓取目錄頁，提取書名和章節清單"""
         soup = BeautifulSoup(html, "lxml")
 
-        # 提取書名
-        title_elem = soup.find("h1")
-        title = title_elem.get_text().strip() if title_elem else "未知書名"
+        # 提取書名:優先 og:novel:book_name(最可靠),次為 h1,最後 <title>
+        title = ""
+        book_meta = soup.find("meta", property="og:novel:book_name")
+        if book_meta and book_meta.get("content", "").strip():
+            title = book_meta["content"].strip()
+        if not title:
+            title_elem = soup.find("h1")
+            title = title_elem.get_text().strip() if title_elem else ""
+        if not title and soup.title:
+            title = re.split(r"[-_|,，—«»《》]", soup.title.get_text())[0].strip()
+        if not title:
+            title = "未知書名"
 
         # 提取作者
         author = ""
-        for elem in soup.find_all(string=re.compile(r"作者")):
-            parent = elem.parent
-            if parent:
-                link = parent.find("a")
-                if link:
-                    author = link.get_text().strip()
-                    break
+        author_meta = soup.find("meta", property="og:novel:author")
+        if author_meta and author_meta.get("content", "").strip():
+            author = author_meta["content"].strip()
+        if not author:
+            for elem in soup.find_all(string=re.compile(r"作者")):
+                parent = elem.parent
+                if parent:
+                    link = parent.find("a")
+                    if link:
+                        author = link.get_text().strip()
+                        break
 
         # 提取章節 — 直接搜尋所有匹配 /books/{id}/{cid}.html 的連結
         chapters = []
