@@ -16,9 +16,11 @@ from PyQt6.QtWidgets import (
     QListWidget,
     QFileDialog,
     QMessageBox,
+    QSpinBox,
 )
 from PyQt6.QtCore import QThread, pyqtSignal
 from PyQt6.QtGui import QFont
+from PyQt6.QtWidgets import QClipboard
 
 from downloader_task import Cancelled, download_novel
 
@@ -93,33 +95,43 @@ class NovelDownloaderUI(QMainWindow):
         widget = QWidget()
         layout = QVBoxLayout()
 
-        # --- 新增任務區 ---
-        layout.addWidget(QLabel("新增下載任務:"))
+        # --- 新增任務區（簡化） ---
+        layout.addWidget(QLabel("小說 URL:"))
         url_layout = QHBoxLayout()
-        url_layout.addWidget(QLabel("目錄頁 URL:"))
         self.url_input = QLineEdit()
-        self.url_input.setPlaceholderText("例: https://www.69shuba.com/book/67964.htm")
+        self.url_input.setPlaceholderText("貼上小說目錄頁或簡介頁網址")
         url_layout.addWidget(self.url_input)
+        paste_btn = QPushButton("貼上")
+        paste_btn.setMaximumWidth(50)
+        paste_btn.clicked.connect(self.paste_from_clipboard)
+        url_layout.addWidget(paste_btn)
         layout.addLayout(url_layout)
 
+        # --- 選項行（更緊湊） ---
         opt_layout = QHBoxLayout()
-        opt_layout.addWidget(QLabel("書名(可空):"))
+        opt_layout.addWidget(QLabel("書名:"))
         self.title_input = QLineEdit()
-        self.title_input.setPlaceholderText("留空自動抓取")
+        self.title_input.setPlaceholderText("可空")
+        self.title_input.setMaximumWidth(150)
         opt_layout.addWidget(self.title_input)
-        opt_layout.addWidget(QLabel("起始章:"))
+
+        opt_layout.addWidget(QLabel("章節:"))
+        opt_layout.addWidget(QLabel("第"))
         self.start_input = QLineEdit()
         self.start_input.setPlaceholderText("1")
-        self.start_input.setMaximumWidth(70)
+        self.start_input.setMaximumWidth(50)
         opt_layout.addWidget(self.start_input)
-        opt_layout.addWidget(QLabel("結束章:"))
+        opt_layout.addWidget(QLabel("~"))
         self.end_input = QLineEdit()
-        self.end_input.setPlaceholderText("最後")
-        self.end_input.setMaximumWidth(70)
+        self.end_input.setPlaceholderText("末")
+        self.end_input.setMaximumWidth(50)
         opt_layout.addWidget(self.end_input)
-        self.add_btn = QPushButton("加入隊列")
+        opt_layout.addWidget(QLabel("章"))
+
+        self.add_btn = QPushButton("➕ 加入隊列")
         self.add_btn.clicked.connect(self.add_job)
         opt_layout.addWidget(self.add_btn)
+        opt_layout.addStretch()
         layout.addLayout(opt_layout)
 
         # --- 隊列 ---
@@ -180,6 +192,15 @@ class NovelDownloaderUI(QMainWindow):
         self.setCentralWidget(widget)
 
     # --- 隊列操作 ---
+    def paste_from_clipboard(self):
+        """從剪貼板貼上 URL"""
+        clipboard = QApplication.clipboard()
+        text = clipboard.text().strip()
+        if text:
+            self.url_input.setText(text)
+        else:
+            QMessageBox.warning(self, "提示", "剪貼板是空的")
+
     def job_text(self, job):
         rng = f"第{job['start'] or 1}~{job['end'] or '末'}章" if (job["start"] or job["end"]) else "全書"
         name = job["title"] or "(自動書名)"
