@@ -104,10 +104,13 @@ def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
         callback("chapter", n, total, f"[{n}/{total}] {ch.title[:30]}")
 
     # 合併前後處理(只動輸出,不動快取):自訂規則 → 跨章重複樣板自動偵測
-    rules = load_rules()
+    # 提取網站識別符(優先用專用規則,找不到用全局)
+    site_hint = adapter.domains[0] if hasattr(adapter, "domains") and adapter.domains else None
+    rules = load_rules(site_hint)
     contents = [apply_rules(c, rules) for _, c in results]
     if rules:
-        callback("filter", 0, 1, f"[過濾] 已套用 {len(rules)} 條自訂規則(filter_rules.txt)")
+        rule_file = f"filter_rules_{site_hint.replace('.', '_').lower()}.txt" if site_hint else "filter_rules.txt"
+        callback("filter", 0, 1, f"[過濾] 已套用 {len(rules)} 條規則({rule_file})")
     contents, removed = drop_repeated(contents)
     if removed:
         preview = "|".join(p[:25] for p in removed[:3])

@@ -17,22 +17,48 @@ DEFAULT_RULES_HEADER = """\
 """
 
 
-def rules_path() -> Path:
+def rules_dir() -> Path:
+    """規則檔目錄"""
     if getattr(sys, "frozen", False):
-        return Path(sys.executable).parent / "filter_rules.txt"
-    return Path(__file__).parent / "filter_rules.txt"
+        return Path(sys.executable).parent
+    return Path(__file__).parent
 
 
-def ensure_rules_file() -> Path:
-    p = rules_path()
-    if not p.exists():
-        p.write_text(DEFAULT_RULES_HEADER, encoding="utf-8")
-    return p
+def rules_path(site_hint: str = None) -> Path:
+    """per-site 規則優先,全局規則備援。
+    site_hint: 網域名或網站識別符,如 'xbanxia.cc' 或 'xbanxia'
+    """
+    d = rules_dir()
+    if site_hint:
+        # 嘗試 filter_rules_xbanxia.txt 或 filter_rules_xbanxia.cc.txt
+        site_clean = site_hint.replace(".", "_").replace("www_", "").lower()
+        site_file = d / f"filter_rules_{site_clean}.txt"
+        if site_file.exists():
+            return site_file
+    # 回到全局規則
+    return d / "filter_rules.txt"
 
 
-def load_rules():
-    """回傳 [(kind, pattern)];kind 為 'str'(包含比對) 或 're'(正則)。"""
-    p = rules_path()
+def ensure_rules_file(site_hint: str = None) -> Path:
+    """確保規則檔存在。若 site_hint 指定,則建立 per-site 檔案。"""
+    if site_hint:
+        site_clean = site_hint.replace(".", "_").replace("www_", "").lower()
+        p = rules_dir() / f"filter_rules_{site_clean}.txt"
+        if not p.exists():
+            p.write_text(f"# {site_hint} 專用過濾規則\n\n" + DEFAULT_RULES_HEADER, encoding="utf-8")
+        return p
+    else:
+        p = rules_dir() / "filter_rules.txt"
+        if not p.exists():
+            p.write_text(DEFAULT_RULES_HEADER, encoding="utf-8")
+        return p
+
+
+def load_rules(site_hint: str = None):
+    """回傳 [(kind, pattern)];kind 為 'str'(包含比對) 或 're'(正則)。
+    site_hint: 優先載入該網站的專用規則,找不到則用全局規則。
+    """
+    p = rules_path(site_hint)
     if not p.exists():
         return []
     rules = []

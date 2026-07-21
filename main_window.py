@@ -23,7 +23,8 @@ from PyQt6.QtCore import QThread, pyqtSignal
 from PyQt6.QtGui import QFont
 
 from downloader_task import Cancelled, download_novel
-from textfilter import ensure_rules_file
+from textfilter import ensure_rules_file, rules_path
+from PyQt6.QtWidgets import QComboBox
 
 STATUS_LABEL = {
     "pending": "⏳ 等待",
@@ -254,29 +255,65 @@ class NovelDownloaderUI(QMainWindow):
         self.queue_list.item(row).setText(self.job_text(self.jobs[row]))
 
     def edit_rules(self):
-        """編輯自訂過濾規則(filter_rules.txt),儲存後下一次下載生效。"""
-        path = ensure_rules_file()
+        """編輯自訂過濾規則:全局或網站專用,儲存後下一次下載生效。"""
         dlg = QDialog(self)
-        dlg.setWindowTitle("自訂過濾規則")
-        dlg.resize(560, 420)
+        dlg.setWindowTitle("過濾規則編輯")
+        dlg.resize(560, 480)
         v = QVBoxLayout()
+
+        # 網站選擇
+        site_layout = QHBoxLayout()
+        site_layout.addWidget(QLabel("規則類型:"))
+        site_combo = QComboBox()
+        site_combo.addItem("全局規則 (所有網站)", None)
+        site_combo.addItem("69shuba 專用", "69shuba.com")
+        site_combo.addItem("sunzhinan 專用", "sunzhinan.com")
+        site_combo.addItem("xbanxia 專用", "xbanxia.cc")
+        site_combo.addItem("czbooks 專用", "czbooks.net")
+        site_layout.addWidget(site_combo)
+        site_layout.addStretch()
+        v.addLayout(site_layout)
+
+        # 說明
         v.addWidget(QLabel(
             "每行一條規則,命中的整段會從輸出移除:\n"
             "  直接寫文字 = 段落包含該文字就移除;re: 開頭 = 正則;# 開頭 = 註解\n"
             "儲存後下一次下載生效;已下載的書重跑一次即可(用快取,不會重抓)"))
+
+        # 編輯框
         editor = QTextEdit()
-        editor.setPlainText(path.read_text(encoding="utf-8"))
         v.addWidget(editor)
+
+        # 規則檔同步
+        def load_rules_for_site(site_hint):
+            path = rules_path(site_hint)
+            if path.exists():
+                editor.setPlainText(path.read_text(encoding="utf-8"))
+            else:
+                header = f"# {site_hint} 專用規則\n\n" if site_hint else "# 全局規則\n\n"
+                editor.setPlainText(header)
+
+        def save_and_close():
+            site_hint = site_combo.currentData()
+            path = ensure_rules_file(site_hint)
+            path.write_text(editor.toPlainText(), encoding="utf-8")
+            dlg.accept()
+
+        site_combo.currentIndexChanged.connect(
+            lambda: load_rules_for_site(site_combo.currentData()))
+        load_rules_for_site(None)  # 初始化全局規則
+
+        # 按鈕
         h = QHBoxLayout()
         h.addStretch()
         save_btn = QPushButton("儲存")
         cancel_btn = QPushButton("取消")
-        save_btn.clicked.connect(
-            lambda: (path.write_text(editor.toPlainText(), encoding="utf-8"), dlg.accept()))
+        save_btn.clicked.connect(save_and_close)
         cancel_btn.clicked.connect(dlg.reject)
         h.addWidget(save_btn)
         h.addWidget(cancel_btn)
         v.addLayout(h)
+
         dlg.setLayout(v)
         dlg.exec()
 
