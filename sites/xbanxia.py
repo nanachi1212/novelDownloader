@@ -25,16 +25,25 @@ class XbanxiaAdapter(SiteAdapter):
         """抓取目錄頁，提取書名和章節清單"""
         soup = BeautifulSoup(html, "lxml")
 
-        # 提取書名:優先 og:novel:book_name(最可靠),次為 h1,最後 <title>
+        # 提取書名:優先 og:novel:book_name,次為 <title>,最後跳過站名的 h1
         title = ""
         book_meta = soup.find("meta", property="og:novel:book_name")
         if book_meta and book_meta.get("content", "").strip():
             title = book_meta["content"].strip()
-        if not title:
-            title_elem = soup.find("h1")
-            title = title_elem.get_text().strip() if title_elem else ""
+
         if not title and soup.title:
-            title = re.split(r"[-_|,，—«»《》]", soup.title.get_text())[0].strip()
+            # <title> 通常形如「書名, 詳細 - 站名」,取逗號前的部分
+            title = re.split(r"[,，]", soup.title.get_text())[0].strip()
+
+        if not title:
+            # h1 可能有多個,跳過明顯是站名的(如「半夏小說」),找真正的書名
+            for h1 in soup.find_all("h1"):
+                h1_text = h1.get_text().strip()
+                # 站名通常很短且是固定詞(「半夏小說」「69书吧」等),書名通常更長
+                if h1_text and len(h1_text) > 4 and h1_text not in ("半夏小說", "69书吧", "69shuba"):
+                    title = h1_text
+                    break
+
         if not title:
             title = "未知書名"
 
@@ -73,8 +82,8 @@ class XbanxiaAdapter(SiteAdapter):
 
             # 按 cid 排序
             chapter_links.sort(key=lambda x: x[0])
-            for _, title, url in chapter_links:
-                chapters.append(Chapter(title=title, url=url))
+            for _, ch_title, url in chapter_links:
+                chapters.append(Chapter(title=ch_title, url=url))
 
         return BookInfo(title=title, author=author, chapters=chapters)
 
