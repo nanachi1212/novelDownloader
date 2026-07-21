@@ -20,7 +20,6 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import QThread, pyqtSignal
 from PyQt6.QtGui import QFont
-from PyQt6.QtWidgets import QClipboard
 
 from downloader_task import Cancelled, download_novel
 
