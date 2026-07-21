@@ -3,8 +3,9 @@ from urllib.parse import urlparse
 
 from .shuba69 import Shuba69
 from .sunzhinan import SunzhinanAdapter
+from .xbanxia import XbanxiaAdapter
 
-ADAPTERS = [Shuba69, SunzhinanAdapter]
+ADAPTERS = [Shuba69, SunzhinanAdapter, XbanxiaAdapter]
 
 
 def get_adapter(url: str):
