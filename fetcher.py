@@ -1,8 +1,12 @@
 """Cloudflare-bypass 抓取層:curl_cffi session、重試、編碼處理、限速、429 退避。"""
 import random
+import re
 import time
 
 from curl_cffi import requests
+
+META_CHARSET = re.compile(rb'charset=["\']?\s*([\w-]+)', re.I)
+ENCODING_ALIAS = {"gb2312": "gbk", "gb-2312": "gbk", "big5": "big5hkscs"}
 
 
 class FetchError(RuntimeError):
@@ -11,6 +15,7 @@ class FetchError(RuntimeError):
 
 class Fetcher:
     def __init__(self, encoding="utf-8", delay=2.0, impersonate="chrome131"):
+        # encoding=None 表示依回應自動偵測(HTTP 標頭 → meta charset → utf-8/gbk 試錯)
         self.session = requests.Session(impersonate=impersonate)
         self.encoding = encoding
         self.delay = delay
@@ -34,7 +39,7 @@ class Fetcher:
         for attempt in range(1, retries + 1):
             try:
                 r = self.session.get(url, headers=headers, timeout=20)
-                text = r.content.decode(self.encoding, errors="replace")
+                text = self._decode(r)
 
                 if r.status_code == 429:
                     # 速率限制:加倍延遲後重試
@@ -57,6 +62,27 @@ class Fetcher:
             time.sleep(1.5 * attempt)
 
         raise FetchError(f"抓取失敗 {url}: {last_err}")
+
+    def _decode(self, r):
+        enc = self.encoding
+        if not enc:
+            m = re.search(r"charset=([\w-]+)", r.headers.get("Content-Type", "") or "", re.I)
+            if m:
+                enc = m.group(1)
+            else:
+                m = META_CHARSET.search(r.content[:2048])
+                if m:
+                    enc = m.group(1).decode("ascii", "ignore")
+        if enc:
+            enc = ENCODING_ALIAS.get(enc.lower(), enc)
+            try:
+                return r.content.decode(enc, errors="replace")
+            except LookupError:
+                pass
+        try:
+            return r.content.decode("utf-8")
+        except UnicodeDecodeError:
+            return r.content.decode("gbk", errors="replace")
 
     def polite_sleep(self):
         # 隨機延遲,加入抖動避免同步請求

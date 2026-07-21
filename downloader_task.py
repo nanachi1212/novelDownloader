@@ -49,6 +49,16 @@ def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
     if title_override:
         book.title = title_override
 
+    is_generic = getattr(adapter, "is_generic", False)
+    if is_generic:
+        if len(book.chapters) < 3:
+            raise ValueError(
+                f"[自動偵測] 只找到 {len(book.chapters)} 個章節連結,此網站可能用 JavaScript 載入目錄,"
+                "通用模式吃不下,請回報網址讓我寫專屬 adapter")
+        callback("catalog", 1, 1,
+                 f"[自動偵測] 未註冊網站,使用通用解析|"
+                 f"第一章: {book.chapters[0].title[:20]}|最後一章: {book.chapters[-1].title[:20]}")
+
     total_all = len(book.chapters)
     lo = max(1, start or 1)
     hi = min(total_all, end or total_all)
@@ -82,6 +92,10 @@ def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
                 parts.append(adapter.parse_chapter(html, title=ch.title))
                 next_url = adapter.next_page_url(html, next_url)
             content = join_pages(parts)
+            if is_generic and n == 1 and len(content) < 80:
+                raise ValueError(
+                    f"[自動偵測] 第一章只解析出 {len(content)} 字,通用模式可能抓錯正文區塊,"
+                    "已中止下載;請回報網址讓我寫專屬 adapter")
             cache_file.write_text(content, encoding="utf-8")
             fetched += 1
             fetcher.polite_sleep()

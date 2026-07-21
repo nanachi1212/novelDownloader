@@ -5,6 +5,7 @@ from .shuba69 import Shuba69
 from .sunzhinan import SunzhinanAdapter
 from .xbanxia import XbanxiaAdapter
 from .czbooks import CzbooksAdapter
+from .generic import GenericAdapter
 
 ADAPTERS = [Shuba69, SunzhinanAdapter, XbanxiaAdapter, CzbooksAdapter]
 
@@ -14,5 +15,5 @@ def get_adapter(url: str):
     for cls in ADAPTERS:
         if host in cls.domains:
             return cls()
-    supported = ", ".join(sorted({d for cls in ADAPTERS for d in cls.domains}))
-    raise ValueError(f"不支援的網站: {host}(目前支援: {supported})")
+    # 未註冊網站:用通用啟發式解析(下載前主流程會做預檢)
+    return GenericAdapter()
