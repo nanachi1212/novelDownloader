@@ -108,10 +108,13 @@ class CzbooksAdapter(SiteAdapter):
                 elem.decompose()
 
         # 移除推薦區域
+        parents = []
         for elem in content.find_all(string=re.compile(r"推薦|廣告|評論|相關", re.I)):
-            parent = elem.parent
-            if parent and parent.name in ["div", "section", "aside"]:
-                parent.decompose()
+            parent = getattr(elem, "parent", None)
+            if parent and parent.name in ["div", "section", "aside"] and parent not in parents:
+                parents.append(parent)
+        for parent in parents:
+            parent.decompose()
 
         # 提取文字
         text = content.get_text()

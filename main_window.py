@@ -15,20 +15,22 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QProgressBar,
     QTextEdit,
-    QListWidget,
+    QTreeWidget,
+    QTreeWidgetItem,
+    QMenu,
     QFileDialog,
     QMessageBox,
     QSpinBox,
     QDialog,
 )
-from PyQt6.QtCore import QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QFont
 
 from downloader_task import Cancelled, download_novel
 from textfilter import ensure_rules_file, rules_path
 from PyQt6.QtWidgets import QComboBox
 
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.2.0"
 
 STATUS_LABEL = {
     "pending": "⏳ 等待",
@@ -43,6 +45,7 @@ class QueueThread(QThread):
     """以可設定的工作數並行處理書籍；每本書內的章節仍依序下載。"""
 
     sig_log = pyqtSignal(str)
+    sig_job_log = pyqtSignal(int, str)
     sig_progress = pyqtSignal(int, int, int)
     sig_job_status = pyqtSignal(int, str)
     sig_all_done = pyqtSignal()
@@ -94,8 +97,10 @@ class QueueThread(QThread):
                     if stage == "chapter":
                         self.sig_progress.emit(row, current, total)
                         if current == 1 or current == total or current % 10 == 0:
+                            self.sig_job_log.emit(row, msg)
                             self.sig_log.emit(f"[{prefix}] {msg}")
                     else:
+                        self.sig_job_log.emit(row, msg)
                         self.sig_log.emit(f"[{prefix}] {msg}")
 
                 download_novel(
@@ -108,10 +113,12 @@ class QueueThread(QThread):
             except Cancelled:
                 job["status"] = "stopped"
                 self.sig_job_status.emit(row, "stopped")
+                self.sig_job_log.emit(row, "已停止；重新開始會從快取續傳。")
                 self.sig_log.emit(f"[{prefix}] 已停止；重新開始會從快取續傳。")
             except Exception as e:
                 job["status"] = "failed"
                 self.sig_job_status.emit(row, "failed")
+                self.sig_job_log.emit(row, f"✗ 下載失敗：{e}")
                 self.sig_log.emit(f"[{prefix}] ✗ 下載失敗：{e}")
 
     def run(self):
@@ -175,8 +182,11 @@ class NovelDownloaderUI(QMainWindow):
 
         # --- 隊列 ---
         layout.addWidget(QLabel("下載隊列(可同時下載多本；每本書的章節仍依序執行):"))
-        self.queue_list = QListWidget()
+        self.queue_list = QTreeWidget()
+        self.queue_list.setHeaderHidden(True)
         self.queue_list.setMaximumHeight(140)
+        self.queue_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.queue_list.customContextMenuRequested.connect(self.show_queue_menu)
         layout.addWidget(self.queue_list)
         qbtn_layout = QHBoxLayout()
         self.remove_btn = QPushButton("移除選中")
@@ -255,6 +265,10 @@ class NovelDownloaderUI(QMainWindow):
         name = job["title"] or "(自動書名)"
         return f"{STATUS_LABEL[job['status']]} | {name} | {rng} | {job['url']}"
 
+    def job_item(self, row):
+        item = self.queue_list.topLevelItem(row)
+        return item if item else None
+
     def add_job(self):
         url = self.url_input.text().strip()
         if not url:
@@ -272,31 +286,59 @@ class NovelDownloaderUI(QMainWindow):
         job = {"url": url, "title": self.title_input.text().strip(),
                "start": start, "end": end, "status": "pending"}
         self.jobs.append(job)
-        self.queue_list.addItem(self.job_text(job))
+        self.queue_list.addTopLevelItem(QTreeWidgetItem([self.job_text(job)]))
         self.url_input.clear()
         self.title_input.clear()
         self.start_input.clear()
         self.end_input.clear()
 
     def remove_selected(self):
-        row = self.queue_list.currentRow()
+        item = self.queue_list.currentItem()
+        if item and item.parent():
+            item = item.parent()
+        row = self.queue_list.indexOfTopLevelItem(item) if item else -1
         if row < 0:
             return
         if self.jobs[row]["status"] == "running":
             QMessageBox.warning(self, "無法移除", "這本正在下載,請先按「停止」")
             return
         self.jobs.pop(row)
-        self.queue_list.takeItem(row)
+        self.queue_list.takeTopLevelItem(row)
 
     def reset_failed(self):
         for row, job in enumerate(self.jobs):
             if job["status"] in ("failed", "stopped"):
                 job["status"] = "pending"
-                self.queue_list.item(row).setText(self.job_text(job))
+                item = self.job_item(row)
+                if item:
+                    item.setText(0, self.job_text(job))
 
     def refresh_row(self, row, status):
         self.jobs[row]["status"] = status
-        self.queue_list.item(row).setText(self.job_text(self.jobs[row]))
+        item = self.job_item(row)
+        if item:
+            item.setText(0, self.job_text(self.jobs[row]))
+            if status in ("running", "failed", "stopped"):
+                item.setExpanded(True)
+
+    def add_job_log(self, row, msg):
+        item = self.job_item(row)
+        if not item:
+            return
+        item.addChild(QTreeWidgetItem([msg]))
+        item.setExpanded(True)
+
+    def show_queue_menu(self, pos):
+        item = self.queue_list.itemAt(pos)
+        if item and item.parent():
+            item = item.parent()
+        row = self.queue_list.indexOfTopLevelItem(item) if item else -1
+        if row < 0:
+            return
+        menu = QMenu(self)
+        copy_url = menu.addAction("複製網址")
+        if menu.exec(self.queue_list.viewport().mapToGlobal(pos)) == copy_url:
+            QApplication.clipboard().setText(self.jobs[row]["url"])
 
     def edit_rules(self):
         """編輯自訂過濾規則:全局或網站專用,儲存後下一次下載生效。"""
@@ -387,6 +429,7 @@ class NovelDownloaderUI(QMainWindow):
         self.log.append(f"—— 開始處理隊列，同時下載 {workers} 本 ——")
         self.thread = QueueThread(self.jobs, self.selected_dir, delay, workers)
         self.thread.sig_log.connect(self.log.append)
+        self.thread.sig_job_log.connect(self.add_job_log)
         self.thread.sig_progress.connect(self.on_progress)
         self.thread.sig_job_status.connect(self.refresh_row)
         self.thread.sig_all_done.connect(self.on_all_done)

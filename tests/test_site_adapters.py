@@ -102,3 +102,17 @@ def test_czbooks_current_layout_catalog_and_chapter():
     """
     assert adapter.parse_chapter(chapter, "第1章 死人坑") == "雨下了一天一夜。死人坑中，伸出了一隻手。"
 
+
+def test_czbooks_chapter_removes_repeated_ad_parent_once():
+    adapter = CzbooksAdapter()
+    chapter = """
+    <div class="chapter-detail">
+      <div class="content">
+        <p>第一段正文</p>
+        <div>推薦閱讀<br>廣告</div>
+        <p>第二段正文</p>
+      </div>
+    </div>
+    """
+    assert adapter.parse_chapter(chapter) == "第一段正文\n\n第二段正文"
+
