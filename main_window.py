@@ -28,6 +28,8 @@ from downloader_task import Cancelled, download_novel
 from textfilter import ensure_rules_file, rules_path
 from PyQt6.QtWidgets import QComboBox
 
+APP_VERSION = "1.1.0"
+
 STATUS_LABEL = {
     "pending": "⏳ 等待",
     "running": "▶ 下載中",
@@ -123,7 +125,7 @@ class QueueThread(QThread):
 class NovelDownloaderUI(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("小說下載器")
+        self.setWindowTitle(f"小說下載器 v{APP_VERSION}")
         self.setGeometry(100, 100, 860, 680)
         self.selected_dir = Path.home() / "Downloads"
         self.jobs = []  # [{url,title,start,end,status}]
@@ -206,7 +208,7 @@ class NovelDownloaderUI(QMainWindow):
         self.concurrent_input.setRange(1, 6)
         self.concurrent_input.setValue(2)
         self.concurrent_input.setToolTip("同時下載的小說本數；數量過高可能被網站限制")
-        self.concurrent_input.setMaximumWidth(55)
+        self.concurrent_input.setMinimumWidth(80)
         dir_layout.addWidget(self.concurrent_input)
         self.rules_btn = QPushButton("過濾規則...")
         self.rules_btn.clicked.connect(self.edit_rules)

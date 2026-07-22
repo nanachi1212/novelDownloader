@@ -1,4 +1,5 @@
 from sites import get_adapter
+from sites.czbooks import CzbooksAdapter
 from sites.novel543 import Novel543Adapter
 from sites.shuku52 import Shuku52Adapter
 
@@ -76,4 +77,28 @@ def test_novel543_chapter_and_domain_registration():
     assert isinstance(
         get_adapter("https://look.thisiscm.com/0710607590/8086_1.html"), Novel543Adapter
     )
+
+
+def test_czbooks_current_layout_catalog_and_chapter():
+    adapter = CzbooksAdapter()
+    catalog = """
+    <title>【免費小說】《諸界末日在線》2026最新連載、線上看 | 小說狂人</title>
+    <div class="info">《諸界末日在線》 作者: 煙火成城</div>
+    <ul id="chapter-list" class="chapter-list">
+      <li><a href="/n/u70o3/uifj2">第1章 死人坑</a></li>
+      <li><a href="/n/u70o3/uifjk">第2章 末日</a></li>
+    </ul>
+    """
+    book = adapter.parse_catalog(catalog)
+    assert (book.title, book.author) == ("諸界末日在線", "煙火成城")
+    assert [chapter.title for chapter in book.chapters] == ["第1章 死人坑", "第2章 末日"]
+
+    chapter = """
+    <div class="chapter-sidebar"></div>
+    <div class="chapter-detail">
+      <h1 class="name">《諸界末日在線》第1章 死人坑</h1>
+      <div class="content">雨下了一天一夜。<br>死人坑中，伸出了一隻手。</div>
+    </div>
+    """
+    assert adapter.parse_chapter(chapter, "第1章 死人坑") == "雨下了一天一夜。死人坑中，伸出了一隻手。"
 

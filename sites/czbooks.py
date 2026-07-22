@@ -25,17 +25,27 @@ class CzbooksAdapter(SiteAdapter):
         """抓取目錄頁，提取書名和章節清單"""
         soup = BeautifulSoup(html, "lxml")
 
-        # 提取書名
-        title_elem = soup.find("h2")
-        if not title_elem:
-            title_elem = soup.find("h1")
-        title = title_elem.get_text(strip=True) if title_elem else "未知書名"
-        # 清理書名（移除《》或其他符號）
-        title = re.sub(r"[《》【】]", "", title).strip()
+        info = soup.select_one(".info")
+        title = ""
+        if info:
+            m = re.search(r"《([^》]+)》", info.get_text(" ", strip=True))
+            title = m.group(1).strip() if m else ""
+        if not title:
+            title_elem = soup.find("h2") or soup.find("h1")
+            title = title_elem.get_text(strip=True) if title_elem else ""
+        if not title and soup.title:
+            m = re.search(r"《([^》]+)》", soup.title.get_text(" ", strip=True))
+            title = m.group(1).strip() if m else ""
+        title = re.sub(r"[《》【】]", "", title).strip() or "未知書名"
 
         # 提取作者
         author = ""
+        if info:
+            m = re.search(r"作者:\s*([^\s]+)", info.get_text(" ", strip=True))
+            author = m.group(1).strip() if m else ""
         for text in soup.find_all(string=re.compile(r"作者")):
+            if author:
+                break
             parent = text.parent
             if parent:
                 link = parent.find("a")
@@ -80,7 +90,9 @@ class CzbooksAdapter(SiteAdapter):
         soup = BeautifulSoup(html, "lxml")
 
         # 找內容區域（通常在 article 或特定 class 的 div）
-        content = soup.find("article")
+        content = soup.select_one(".chapter-detail .content")
+        if not content:
+            content = soup.find("article")
         if not content:
             content = soup.find("div", class_=re.compile(r"content|chapter|text|body", re.I))
         if not content:
