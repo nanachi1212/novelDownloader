@@ -1,6 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
 block_cipher = None
-this_dir = r'E:\AI gravity project\novel-downloader'
+this_dir = SPECPATH
 
 a = Analysis(
     [this_dir + '\\gui_launcher.py'],

@@ -2,11 +2,16 @@
 import random
 import re
 import time
+from urllib.parse import urljoin
 
 from curl_cffi import requests
 
 META_CHARSET = re.compile(rb'charset=["\']?\s*([\w-]+)', re.I)
 ENCODING_ALIAS = {"gb2312": "gbk", "gb-2312": "gbk", "big5": "big5hkscs"}
+JS_REDIRECT = re.compile(
+    r"window\.location\.href\s*=\s*(['\"])(?P<url>[^'\"]+)\1", re.I
+)
+MAX_JS_REDIRECTS = 5
 
 
 class FetchError(RuntimeError):
@@ -38,8 +43,27 @@ class Fetcher:
         last_err = None
         for attempt in range(1, retries + 1):
             try:
-                r = self.session.get(url, headers=headers, timeout=20)
-                text = self._decode(r)
+                current_url = url
+                for redirect_count in range(MAX_JS_REDIRECTS + 1):
+                    r = self.session.get(current_url, headers=headers, timeout=20)
+                    text = self._decode(r)
+
+                    # Some reader sites return a tiny HTML page whose only useful action is
+                    # a JavaScript redirect. Follow a short, bounded chain in the same session
+                    # so cookies, rotating reader domains, and Referer keep working.
+                    redirect = JS_REDIRECT.search(text) if len(text) < 10_000 else None
+                    if r.status_code == 200 and redirect:
+                        if redirect_count == MAX_JS_REDIRECTS:
+                            raise FetchError(
+                                f"JavaScript 跳轉超過 {MAX_JS_REDIRECTS} 次: {url}"
+                            )
+                        next_url = urljoin(current_url, redirect.group("url"))
+                        if next_url == current_url:
+                            raise FetchError(f"JavaScript 跳轉指向自身: {current_url}")
+                        headers["Referer"] = current_url
+                        current_url = next_url
+                        continue
+                    break
 
                 if r.status_code == 429:
                     # 速率限制:加倍延遲後重試
@@ -49,7 +73,7 @@ class Fetcher:
                     continue
 
                 if r.status_code == 200 and "Just a moment" not in text:
-                    self.last_url = url
+                    self.last_url = current_url
                     return text
 
                 if "Just a moment" in text:

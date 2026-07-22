@@ -5,9 +5,18 @@ from .shuba69 import Shuba69
 from .sunzhinan import SunzhinanAdapter
 from .xbanxia import XbanxiaAdapter
 from .czbooks import CzbooksAdapter
+from .shuku52 import Shuku52Adapter
+from .novel543 import Novel543Adapter
 from .generic import GenericAdapter
 
-ADAPTERS = [Shuba69, SunzhinanAdapter, XbanxiaAdapter, CzbooksAdapter]
+ADAPTERS = [
+    Shuba69,
+    SunzhinanAdapter,
+    XbanxiaAdapter,
+    CzbooksAdapter,
+    Shuku52Adapter,
+    Novel543Adapter,
+]
 
 
 def get_adapter(url: str):

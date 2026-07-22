@@ -1,5 +1,7 @@
 """PyQt6 圖形界面:下載隊列、章節範圍、儲存位置、書名編輯、進度與日誌。"""
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from PyQt6.QtWidgets import (
@@ -36,52 +38,85 @@ STATUS_LABEL = {
 
 
 class QueueThread(QThread):
-    """依序處理隊列;jobs 是與主執行緒共享的 list,執行中允許繼續加入。"""
+    """以可設定的工作數並行處理書籍；每本書內的章節仍依序下載。"""
 
     sig_log = pyqtSignal(str)
-    sig_progress = pyqtSignal(int, int)
+    sig_progress = pyqtSignal(int, int, int)
     sig_job_status = pyqtSignal(int, str)
     sig_all_done = pyqtSignal()
 
-    def __init__(self, jobs, output_dir, delay):
+    def __init__(self, jobs, output_dir, delay, max_workers=2):
         super().__init__()
         self.jobs = jobs
         self.output_dir = output_dir
         self.delay = delay
-        self.stop_requested = False
+        self.max_workers = max(1, int(max_workers))
+        self._stop_event = threading.Event()
+        self._jobs_lock = threading.Lock()
 
-    def run(self):
+    @property
+    def stop_requested(self):
+        return self._stop_event.is_set()
+
+    def request_stop(self):
+        self._stop_event.set()
+
+    def _claim_pending_job(self):
+        """原子地領取一筆等待中的工作，避免多個 worker 抓到同一本書。"""
+        with self._jobs_lock:
+            for row, job in enumerate(self.jobs):
+                if job["status"] == "pending":
+                    job["status"] = "running"
+                    return row, job
+        return None
+
+    def _has_running_job(self):
+        with self._jobs_lock:
+            return any(job["status"] == "running" for job in self.jobs)
+
+    def _run_worker(self):
         while not self.stop_requested:
-            row = next((i for i, j in enumerate(self.jobs) if j["status"] == "pending"), None)
-            if row is None:
+            claimed = self._claim_pending_job()
+            if claimed is None:
+                # 其他 worker 還在忙時稍候，讓執行中新增的任務也能被領取。
+                if self._has_running_job():
+                    self._stop_event.wait(0.1)
+                    continue
                 break
-            job = self.jobs[row]
-            job["status"] = "running"
+
+            row, job = claimed
             self.sig_job_status.emit(row, "running")
+            prefix = job["title"] or f"隊列 {row + 1}"
             try:
                 def cb(stage, current, total, msg):
                     if stage == "chapter":
-                        self.sig_progress.emit(current, total)
+                        self.sig_progress.emit(row, current, total)
                         if current == 1 or current == total or current % 10 == 0:
-                            self.sig_log.emit(msg)
+                            self.sig_log.emit(f"[{prefix}] {msg}")
                     else:
-                        self.sig_log.emit(msg)
+                        self.sig_log.emit(f"[{prefix}] {msg}")
 
                 download_novel(
                     job["url"], self.output_dir, job["title"], self.delay, cb,
                     start=job["start"], end=job["end"],
-                    cancel_check=lambda: self.stop_requested,
+                    cancel_check=self._stop_event.is_set,
                 )
                 job["status"] = "done"
                 self.sig_job_status.emit(row, "done")
             except Cancelled:
                 job["status"] = "stopped"
                 self.sig_job_status.emit(row, "stopped")
-                self.sig_log.emit("已停止。再按「開始下載」會從快取續傳。")
+                self.sig_log.emit(f"[{prefix}] 已停止；重新開始會從快取續傳。")
             except Exception as e:
                 job["status"] = "failed"
                 self.sig_job_status.emit(row, "failed")
-                self.sig_log.emit(f"✗ 這本失敗,繼續下一本: {e}")
+                self.sig_log.emit(f"[{prefix}] ✗ 下載失敗：{e}")
+
+    def run(self):
+        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            workers = [executor.submit(self._run_worker) for _ in range(self.max_workers)]
+            for worker in workers:
+                worker.result()
         self.sig_all_done.emit()
 
 
@@ -137,7 +172,7 @@ class NovelDownloaderUI(QMainWindow):
         layout.addLayout(opt_layout)
 
         # --- 隊列 ---
-        layout.addWidget(QLabel("下載隊列(依序執行,下載中也可以繼續加):"))
+        layout.addWidget(QLabel("下載隊列(可同時下載多本；每本書的章節仍依序執行):"))
         self.queue_list = QListWidget()
         self.queue_list.setMaximumHeight(140)
         layout.addWidget(self.queue_list)
@@ -166,6 +201,13 @@ class NovelDownloaderUI(QMainWindow):
         self.delay_input.setText("2.0")
         self.delay_input.setMaximumWidth(70)
         dir_layout.addWidget(self.delay_input)
+        dir_layout.addWidget(QLabel("同時下載:"))
+        self.concurrent_input = QSpinBox()
+        self.concurrent_input.setRange(1, 6)
+        self.concurrent_input.setValue(2)
+        self.concurrent_input.setToolTip("同時下載的小說本數；數量過高可能被網站限制")
+        self.concurrent_input.setMaximumWidth(55)
+        dir_layout.addWidget(self.concurrent_input)
         self.rules_btn = QPushButton("過濾規則...")
         self.rules_btn.clicked.connect(self.edit_rules)
         dir_layout.addWidget(self.rules_btn)
@@ -337,8 +379,11 @@ class NovelDownloaderUI(QMainWindow):
         self.stop_btn.setEnabled(True)
         self.remove_btn.setEnabled(False)
         self.retry_btn.setEnabled(False)
+        self.concurrent_input.setEnabled(False)
         self.progress.setValue(0)
-        self.thread = QueueThread(self.jobs, self.selected_dir, delay)
+        workers = self.concurrent_input.value()
+        self.log.append(f"—— 開始處理隊列，同時下載 {workers} 本 ——")
+        self.thread = QueueThread(self.jobs, self.selected_dir, delay, workers)
         self.thread.sig_log.connect(self.log.append)
         self.thread.sig_progress.connect(self.on_progress)
         self.thread.sig_job_status.connect(self.refresh_row)
@@ -347,19 +392,21 @@ class NovelDownloaderUI(QMainWindow):
 
     def stop_queue(self):
         if self.thread:
-            self.thread.stop_requested = True
-            self.log.append("正在停止(等目前章節抓完)...")
+            self.thread.request_stop()
+            self.log.append("正在停止所有下載(等各自目前章節抓完)...")
             self.stop_btn.setEnabled(False)
 
-    def on_progress(self, current, total):
+    def on_progress(self, row, current, total):
         self.progress.setMaximum(max(total, 1))
         self.progress.setValue(current)
+        self.progress.setFormat(f"隊列 {row + 1}：%v / %m 章")
 
     def on_all_done(self):
         self.start_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
         self.remove_btn.setEnabled(True)
         self.retry_btn.setEnabled(True)
+        self.concurrent_input.setEnabled(True)
         self.log.append("—— 隊列處理結束 ——")
 
 
