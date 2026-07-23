@@ -84,6 +84,9 @@ def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
             content = cache_file.read_text(encoding="utf-8")
         else:
             html = fetcher.get(ch.url)
+            source_url = adapter.chapter_source_url(html, ch.url)
+            if source_url:
+                html = fetcher.get(source_url, referer=ch.url)
             parts = [adapter.parse_chapter(html, title=ch.title)]
             next_url = adapter.next_page_url(html, ch.url)
             seen = {ch.url}
@@ -119,7 +122,9 @@ def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
     texts = [f"{t}\n\n{c}" for (t, _), c in zip(results, contents)]
 
     suffix = f"_第{lo}-{hi}章" if (start or end) else ""
-    out = Path(output_dir) / f"{safe_filename(book.title)}{suffix}.txt"
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+    out = output_path / f"{safe_filename(book.title)}{suffix}.txt"
     header = f"{book.title}\n作者: {book.author}\n來源: {catalog_url}\n"
     out.write_text(header + "\n\n" + "\n\n\n".join(texts) + "\n", encoding="utf-8")
     callback("done", total, total, f"完成!新抓 {fetched} 章、快取 {total - fetched} 章\n輸出: {out}")

@@ -16,22 +16,33 @@ DATE_AUTHOR_RE = re.compile(r"^\d{4}-\d{2}-\d{2}.*作者")
 
 
 class Shuba69(SiteAdapter):
-    domains = ["69shuba.com", "www.69shuba.com", "69shu.com", "www.69shu.com"]
+    domains = [
+        "69shuba.com",
+        "www.69shuba.com",
+        "69shu.com",
+        "www.69shu.com",
+        "69shuba.tw",
+        "www.69shuba.tw",
+    ]
     encoding = "gbk"
 
     def catalog_url(self, url: str) -> str:
-        m = re.search(r"/book/(\d+)", url)
+        m = re.search(r"/(?:book|indexlist)/(\d+)", url)
         if not m:
             raise ValueError(f"無法從網址解析書籍 id: {url}")
+        if "69shuba.tw" in url:
+            return f"https://69shuba.tw/indexlist/{m.group(1)}/"
         base = url.split("/book/")[0]
         return f"{base}/book/{m.group(1)}/"
 
     def book_id(self, url: str) -> str:
-        m = re.search(r"/book/(\d+)", url)
+        m = re.search(r"/(?:book|indexlist)/(\d+)", url)
         return f"69shuba-{m.group(1)}" if m else "69shuba-unknown"
 
     def meta_url(self, url: str):
-        m = re.search(r"/book/(\d+)", url)
+        m = re.search(r"/(?:book|indexlist)/(\d+)", url)
+        if "69shuba.tw" in url:
+            return f"https://69shuba.tw/book/{m.group(1)}.htm"
         base = url.split("/book/")[0]
         return f"{base}/book/{m.group(1)}.htm"
 
@@ -46,6 +57,8 @@ class Shuba69(SiteAdapter):
     def parse_catalog(self, html: str) -> BookInfo:
         soup = BeautifulSoup(html, "lxml")
         items = soup.select("#catalog li")
+        if not items:
+            items = soup.select(".catalog li, .listmain li, .chapter-list li")
         entries = []
         for li in items:
             a = li.select_one("a")
