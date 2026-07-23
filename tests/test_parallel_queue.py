@@ -67,3 +67,15 @@ def test_queue_thread_limits_parallel_books_per_site(monkeypatch, tmp_path):
     assert max_active_total == 2
     assert max_active_site_a == 1
     assert [job["status"] for job in jobs] == ["done", "done", "done"]
+
+
+def test_queue_thread_can_mark_pending_job_for_removal(tmp_path):
+    jobs = [{
+        "url": "https://example.com/1", "title": "book-1",
+        "start": None, "end": None, "status": "pending",
+    }]
+    queue = main_window.QueueThread(jobs, tmp_path, delay=0)
+
+    assert queue.request_job_remove(0)
+    assert jobs[0]["status"] == "removed"
+    assert jobs[0]["remove_requested"] is True

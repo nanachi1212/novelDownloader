@@ -46,6 +46,8 @@ STATUS_LABEL = {
     "done": "✓ 完成",
     "failed": "✗ 失敗",
     "stopped": "⏸ 已停止(可續傳)",
+    "removing": "🗑 刪除中",
+    "removed": "🗑 已刪除",
 }
 
 
@@ -103,6 +105,23 @@ class QueueThread(QThread):
                 stopped = False
         if stopped:
             self.sig_job_status.emit(row, "stopped")
+        return True
+
+    def request_job_remove(self, row):
+        """移除指定工作；執行中的工作先在章節邊界安全停止。"""
+        with self._jobs_lock:
+            if row < 0 or row >= len(self.jobs):
+                return False
+            job = self.jobs[row]
+            job["remove_requested"] = True
+            job.setdefault("stop_event", threading.Event()).set()
+            if job["status"] == "pending":
+                job["status"] = "removed"
+                removed = True
+            else:
+                removed = False
+        if removed:
+            self.sig_job_status.emit(row, "removed")
         return True
 
     def request_job_start(self, row):
@@ -180,10 +199,16 @@ class QueueThread(QThread):
                 job["status"] = "done"
                 self.sig_job_status.emit(row, "done")
             except Cancelled:
-                job["status"] = "stopped"
-                self.sig_job_status.emit(row, "stopped")
-                self.sig_job_log.emit(row, "已停止；重新開始會從快取續傳。")
-                self.sig_log.emit(f"[{prefix}] 已停止；重新開始會從快取續傳。")
+                if job.get("remove_requested"):
+                    job["status"] = "removed"
+                    self.sig_job_status.emit(row, "removed")
+                    self.sig_job_log.emit(row, "已停止並從隊列移除。")
+                    self.sig_log.emit(f"[{prefix}] 已停止並從隊列移除。")
+                else:
+                    job["status"] = "stopped"
+                    self.sig_job_status.emit(row, "stopped")
+                    self.sig_job_log.emit(row, "已停止；重新開始會從快取續傳。")
+                    self.sig_log.emit(f"[{prefix}] 已停止；重新開始會從快取續傳。")
             except Exception as e:
                 job["status"] = "failed"
                 self.sig_job_status.emit(row, "failed")
@@ -259,6 +284,7 @@ class NovelDownloaderUI(QMainWindow):
         layout.addWidget(self.queue_list)
         qbtn_layout = QHBoxLayout()
         self.remove_btn = QPushButton("移除選中")
+        self.remove_btn.setToolTip("下載中也可移除；執行中的任務會先安全停止")
         self.remove_btn.clicked.connect(self.remove_selected)
         qbtn_layout.addWidget(self.remove_btn)
         self.retry_btn = QPushButton("失敗/停止的重設為等待")
@@ -395,8 +421,17 @@ class NovelDownloaderUI(QMainWindow):
         row = self.queue_list.indexOfTopLevelItem(item) if item else -1
         if row < 0:
             return
-        if self.jobs[row]["status"] == "running":
-            QMessageBox.warning(self, "無法移除", "這本正在下載,請先按「停止」")
+        job = self.jobs[row]
+        if job["status"] == "running":
+            if self.thread and self.thread.isRunning():
+                self.thread.request_job_remove(row)
+                self.refresh_row(row, "removing")
+                self.log.append(f"[{job['title'] or f'隊列 {row + 1}'}] 已要求停止並移除。")
+            return
+        if self.thread and self.thread.isRunning():
+            job["remove_requested"] = True
+            job["status"] = "removed"
+            self.refresh_row(row, "removed")
             return
         self.jobs.pop(row)
         self.queue_list.takeTopLevelItem(row)
@@ -452,12 +487,19 @@ class NovelDownloaderUI(QMainWindow):
         if self.thread and self.thread.isRunning():
             QMessageBox.information(self, "下載進行中", "請等下載停止或完成後再移除已完成任務。")
             return
-        rows = [row for row, job in enumerate(self.jobs) if job["status"] == "done"]
+        rows = [row for row, job in enumerate(self.jobs) if job["status"] in ("done", "removed")]
         for row in reversed(rows):
             self.jobs.pop(row)
             self.queue_list.takeTopLevelItem(row)
         if rows:
             self.log.append(f"已移除 {len(rows)} 個完成任務。")
+
+    def purge_removed(self):
+        """工作執行緒結束後真正移除下載途中標記刪除的項目。"""
+        rows = [row for row, job in enumerate(self.jobs) if job["status"] == "removed"]
+        for row in reversed(rows):
+            self.jobs.pop(row)
+            self.queue_list.takeTopLevelItem(row)
 
     def refresh_row(self, row, status):
         self.jobs[row]["status"] = status
@@ -657,7 +699,7 @@ class NovelDownloaderUI(QMainWindow):
             return
         self.start_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
-        self.remove_btn.setEnabled(False)
+        self.remove_btn.setEnabled(True)
         self.retry_btn.setEnabled(False)
         self.concurrent_input.setEnabled(False)
         self.site_concurrent_input.setEnabled(False)
@@ -685,6 +727,7 @@ class NovelDownloaderUI(QMainWindow):
         self.progress.setFormat(f"隊列 {row + 1}：%v / %m 章")
 
     def on_all_done(self):
+        self.purge_removed()
         self.start_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
         self.remove_btn.setEnabled(True)
