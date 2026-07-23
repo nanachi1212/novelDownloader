@@ -12,7 +12,7 @@ from .generic import GenericAdapter
 from .book8 import Book8Adapter
 from .base import SiteAdapter
 
-ADAPTERS = [
+BUILTIN_ADAPTERS = [
     Shuba69,
     SunzhinanAdapter,
     XbanxiaAdapter,
@@ -21,9 +21,18 @@ ADAPTERS = [
     Novel543Adapter,
     Book8Adapter,
 ]
+ADAPTERS = list(BUILTIN_ADAPTERS)
 
 USER_ADAPTERS, USER_ADAPTER_ERRORS = load_user_adapters(SiteAdapter)
 ADAPTERS.extend(USER_ADAPTERS)
+
+
+def reload_adapters():
+    """重新掃描 user_adapters，讓 GUI 不必重啟即可套用修改。"""
+    global USER_ADAPTERS, USER_ADAPTER_ERRORS
+    USER_ADAPTERS, USER_ADAPTER_ERRORS = load_user_adapters(SiteAdapter)
+    ADAPTERS[:] = list(BUILTIN_ADAPTERS) + list(USER_ADAPTERS)
+    return ADAPTERS
 
 
 def get_adapter(url: str):

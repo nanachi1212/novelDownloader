@@ -1,6 +1,8 @@
 """下載任務核心:CLI 與 GUI 共用,支援章節範圍、快取斷點續傳、進度回報。"""
 import re
 import sys
+import html as html_lib
+import zipfile
 from pathlib import Path
 
 from fetcher import Fetcher
@@ -23,8 +25,62 @@ def safe_filename(name: str) -> str:
     return re.sub(r'[\\/:*?"<>|]', "_", name).strip() or "novel"
 
 
+def output_basename(title: str, author: str, site: str, pattern: str = "title") -> str:
+    values = {"title": title, "author": author, "site": site}
+    if pattern == "author_title":
+        name = f"{author}_{title}" if author else title
+    elif pattern == "site_title":
+        name = f"{site}_{title}" if site else title
+    else:
+        name = title
+    return safe_filename(name)
+
+
+def write_epub(path: Path, title: str, author: str, source: str, chapters: list[tuple[str, str]]):
+    """以標準 library 產生可被閱讀器開啟的最小 EPUB 3 檔案。"""
+    import uuid
+
+    book_id = f"urn:uuid:{uuid.uuid4()}"
+    with zipfile.ZipFile(path, "w") as book:
+        book.writestr("mimetype", "application/epub+zip", compress_type=zipfile.ZIP_STORED)
+        book.writestr("META-INF/container.xml", """<?xml version="1.0" encoding="UTF-8"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+<rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles>
+</container>""")
+        items = []
+        spine = []
+        for index, (chapter_title, content) in enumerate(chapters, 1):
+            item_id = f"chapter{index}"
+            filename = f"chapter{index}.xhtml"
+            paragraphs = "".join(
+                f"<p>{html_lib.escape(line)}</p>" for line in content.splitlines() if line.strip()
+            )
+            xhtml = f"""<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml"><head><title>{html_lib.escape(chapter_title)}</title></head>
+<body><h1>{html_lib.escape(chapter_title)}</h1>{paragraphs}</body></html>"""
+            book.writestr(f"OEBPS/{filename}", xhtml)
+            items.append(f'<item id="{item_id}" href="{filename}" media-type="application/xhtml+xml"/>')
+            spine.append(f'<itemref idref="{item_id}"/>')
+        nav_links = "".join(
+            f'<li><a href="chapter{index}.xhtml">{html_lib.escape(chapter_title)}</a></li>'
+            for index, (chapter_title, _) in enumerate(chapters, 1)
+        )
+        book.writestr("OEBPS/nav.xhtml", f"""<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
+<head><title>{html_lib.escape(title)}</title></head><body><nav epub:type="toc"><ol>{nav_links}</ol></nav></body></html>""")
+        items.append('<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>')
+        book.writestr("OEBPS/content.opf", f"""<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="bookid">
+<metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:identifier id="bookid">{book_id}</dc:identifier>
+<dc:title>{html_lib.escape(title)}</dc:title><dc:creator>{html_lib.escape(author)}</dc:creator>
+<dc:language>zh-Hant</dc:language><meta property="dcterms:modified">2026-01-01T00:00:00Z</meta></metadata>
+<manifest>{''.join(items)}</manifest><spine>{''.join(spine)}</spine></package>""")
+        book.writestr("OEBPS/toc.ncx", "")
+
+
 def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
-                   start=None, end=None, cancel_check=None):
+                   start=None, end=None, cancel_check=None, retries=5,
+                   output_format="txt", filename_format="title"):
     """下載小說並輸出 TXT,回傳輸出檔路徑。
 
     callback(stage, current, total, msg),stage: 'catalog'|'chapter'|'done'
@@ -39,10 +95,10 @@ def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
     catalog_url = adapter.catalog_url(url)
     meta_url = adapter.meta_url(url)
     if meta_url:
-        title, author = adapter.parse_meta(fetcher.get(meta_url))
+        title, author = adapter.parse_meta(fetcher.get(meta_url, retries=retries))
     else:
         title = author = ""
-    book = adapter.parse_catalog(fetcher.get(catalog_url))
+    book = adapter.parse_catalog(fetcher.get(catalog_url, retries=retries))
     if title:
         book.title = title
     if author:
@@ -83,16 +139,16 @@ def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
         if cache_file.exists():
             content = cache_file.read_text(encoding="utf-8")
         else:
-            html = fetcher.get(ch.url)
+            html = fetcher.get(ch.url, retries=retries)
             source_url = adapter.chapter_source_url(html, ch.url)
             if source_url:
-                html = fetcher.get(source_url, referer=ch.url)
+                html = fetcher.get(source_url, referer=ch.url, retries=retries)
             parts = [adapter.parse_chapter(html, title=ch.title)]
             next_url = adapter.next_page_url(html, ch.url)
             seen = {ch.url}
             while next_url and next_url not in seen:
                 seen.add(next_url)
-                html = fetcher.get(next_url)
+                html = fetcher.get(next_url, retries=retries)
                 parts.append(adapter.parse_chapter(html, title=ch.title))
                 next_url = adapter.next_page_url(html, next_url)
             content = join_pages(parts)
@@ -124,8 +180,13 @@ def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
     suffix = f"_第{lo}-{hi}章" if (start or end) else ""
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
-    out = output_path / f"{safe_filename(book.title)}{suffix}.txt"
-    header = f"{book.title}\n作者: {book.author}\n來源: {catalog_url}\n"
-    out.write_text(header + "\n\n" + "\n\n\n".join(texts) + "\n", encoding="utf-8")
+    extension = ".epub" if output_format.lower() == "epub" else ".txt"
+    out = output_path / f"{output_basename(book.title, book.author, site_hint or '', filename_format)}{suffix}{extension}"
+    if extension == ".epub":
+        write_epub(out, book.title, book.author, catalog_url,
+                   [(t, c) for (t, _), c in zip(results, contents)])
+    else:
+        header = f"{book.title}\n作者: {book.author}\n來源: {catalog_url}\n"
+        out.write_text(header + "\n\n" + "\n\n\n".join(texts) + "\n", encoding="utf-8")
     callback("done", total, total, f"完成!新抓 {fetched} 章、快取 {total - fetched} 章\n輸出: {out}")
     return out

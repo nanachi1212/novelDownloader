@@ -21,6 +21,8 @@ def main():
     parser.add_argument("url", help="小說目錄頁或簡介頁網址")
     parser.add_argument("--out", help="輸出資料夾(預設: 上層目錄)")
     parser.add_argument("--delay", type=float, default=2.0, help="章節間延遲秒數(預設 2.0,被擋時自動加倍)")
+    parser.add_argument("--retries", type=int, default=5, help="每個網頁請求重試次數(預設 5)")
+    parser.add_argument("--format", choices=("txt", "epub"), default="txt", help="輸出格式(預設 txt)")
     parser.add_argument("--start", type=int, help="起始章(1-based,含)")
     parser.add_argument("--end", type=int, help="結束章(含)")
     parser.add_argument("--limit", type=int, help="只下載前 N 章(測試用,等同 --end N)")
@@ -45,6 +47,8 @@ def main():
         callback=cb,
         start=args.start,
         end=end,
+        retries=args.retries,
+        output_format=args.format,
     )
 
 
