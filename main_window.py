@@ -7,7 +7,7 @@ import uuid
 import shutil
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 
 from PyQt6.QtWidgets import (
     QApplication,
@@ -71,6 +71,19 @@ def site_key_for_url(url: str) -> str:
         pass
     host = urlparse(url).netloc.lower().split(":")[0]
     return host or "unknown"
+
+
+def queue_url_key(url: str) -> str:
+    """產生隊列去重用網址鍵；忽略大小寫網域、片段與結尾斜線。"""
+    parsed = urlparse((url or "").strip())
+    host = parsed.hostname.lower() if parsed.hostname else ""
+    port = parsed.port
+    netloc = host
+    if port and not ((parsed.scheme.lower() == "http" and port == 80) or
+                     (parsed.scheme.lower() == "https" and port == 443)):
+        netloc = f"{host}:{port}"
+    path = parsed.path.rstrip("/") or "/"
+    return urlunparse((parsed.scheme.lower(), netloc, path, "", parsed.query, ""))
 
 
 def classify_download_error(error) -> str:
@@ -390,7 +403,7 @@ class NovelDownloaderUI(QMainWindow):
         self.retry_btn.clicked.connect(self.reset_failed)
         qbtn_layout.addWidget(self.retry_btn)
         self.remove_done_btn = QPushButton("移除已完成")
-        self.remove_done_btn.setToolTip("從隊列移除所有已完成下載的任務")
+        self.remove_done_btn.setToolTip("下載中也可移除已完成項目；項目會立即隱藏並在隊列結束後清理")
         self.remove_done_btn.clicked.connect(self.remove_completed)
         qbtn_layout.addWidget(self.remove_done_btn)
         self.start_selected_btn = QPushButton("單獨開始")
@@ -566,6 +579,18 @@ class NovelDownloaderUI(QMainWindow):
         if not url:
             QMessageBox.warning(self, "輸入不完整", "請輸入目錄頁 URL")
             return
+        url_key = queue_url_key(url)
+        duplicate = next((job for job in self.jobs
+                          if queue_url_key(job.get("url", "")) == url_key), None)
+        if duplicate:
+            QMessageBox.warning(
+                self,
+                "網址已在下載隊列",
+                "這個網址已經存在於隊列中，請勿重複加入。\n\n"
+                f"目前狀態：{STATUS_LABEL.get(duplicate.get('status'), duplicate.get('status'))}\n"
+                f"網址：{duplicate.get('url', '')}",
+            )
+            return
         try:
             start = int(self.start_input.text()) if self.start_input.text().strip() else None
             end = int(self.end_input.text()) if self.end_input.text().strip() else None
@@ -678,10 +703,16 @@ class NovelDownloaderUI(QMainWindow):
 
     def remove_completed(self):
         """移除已完成任務；由底部往上刪除以保持其他 row 索引正確。"""
-        if self.thread and self.thread.isRunning():
-            QMessageBox.information(self, "下載進行中", "請等下載停止或完成後再移除已完成任務。")
-            return
         rows = [row for row, job in enumerate(self.jobs) if job["status"] in ("done", "removed")]
+        if self.thread and self.thread.isRunning():
+            for row in rows:
+                job = self.jobs[row]
+                job["remove_requested"] = True
+                job["status"] = "removed"
+                self.refresh_row(row, "removed")
+            if rows:
+                self.log.append(f"已從畫面移除 {len(rows)} 個完成任務，隊列結束後完成清理。")
+            return
         for row in reversed(rows):
             self.jobs.pop(row)
             self.queue_list.takeTopLevelItem(row)
@@ -700,6 +731,7 @@ class NovelDownloaderUI(QMainWindow):
         item = self.job_item(row)
         if item:
             item.setText(0, self.job_text(self.jobs[row]))
+            item.setHidden(status == "removed")
             if status in ("running", "failed", "stopped"):
                 item.setExpanded(True)
         if status == "done":
@@ -1120,7 +1152,8 @@ class NovelDownloaderUI(QMainWindow):
         for row, job in enumerate(self.jobs):
             item = self.job_item(row)
             if item:
-                item.setHidden(bool(needle) and needle not in self.job_text(job).lower())
+                item.setHidden(job.get("status") == "removed" or
+                               (bool(needle) and needle not in self.job_text(job).lower()))
 
     def export_queue(self):
         path, _ = QFileDialog.getSaveFileName(
@@ -1151,10 +1184,10 @@ class NovelDownloaderUI(QMainWindow):
             data = json.loads(Path(path).read_text(encoding="utf-8"))
             if not isinstance(data, list):
                 raise ValueError("JSON 必須是隊列陣列")
-            existing = {job["url"] for job in self.jobs}
+            existing = {queue_url_key(job.get("url", "")) for job in self.jobs}
             added = 0
             for row in data:
-                if not isinstance(row, dict) or not row.get("url") or row["url"] in existing:
+                if not isinstance(row, dict) or not row.get("url") or queue_url_key(row["url"]) in existing:
                     continue
                 job = {
                     "url": row["url"], "title": row.get("title", ""),
@@ -1170,7 +1203,7 @@ class NovelDownloaderUI(QMainWindow):
                 job.setdefault("id", uuid.uuid4().hex)
                 self.jobs.append(job)
                 self.queue_list.addTopLevelItem(self.make_job_item(job))
-                existing.add(job["url"])
+                existing.add(queue_url_key(job["url"]))
                 added += 1
             self.save_queue()
             self.log.append(f"已匯入 {added} 個隊列項目。")
