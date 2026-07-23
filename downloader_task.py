@@ -80,7 +80,7 @@ def write_epub(path: Path, title: str, author: str, source: str, chapters: list[
 
 def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
                    start=None, end=None, cancel_check=None, retries=5,
-                   output_format="txt", filename_format="title"):
+                   output_format="txt", filename_format="title", request_headers=None):
     """下載小說並輸出 TXT,回傳輸出檔路徑。
 
     callback(stage, current, total, msg),stage: 'catalog'|'chapter'|'done'
@@ -89,7 +89,7 @@ def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
     """
     callback = callback or (lambda *a: None)
     adapter = get_adapter(url)
-    fetcher = Fetcher(encoding=adapter.encoding, delay=delay)
+    fetcher = Fetcher(encoding=adapter.encoding, delay=delay, headers=request_headers)
 
     callback("catalog", 0, 1, "正在抓取目錄...")
     catalog_url = adapter.catalog_url(url)

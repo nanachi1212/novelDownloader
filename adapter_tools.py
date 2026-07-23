@@ -102,6 +102,8 @@ def load_user_adapters(base_class) -> tuple[list[type], list[str]]:
     adapters = []
     errors = []
     for path in sorted(directory.glob("*.py")):
+        if path.with_suffix(path.suffix + ".disabled").exists():
+            continue
         module_name = f"user_adapters.{path.stem}"
         try:
             spec = importlib.util.spec_from_file_location(module_name, path)
@@ -129,3 +131,19 @@ def list_user_adapter_files() -> list[Path]:
     if not directory.exists():
         return []
     return sorted(directory.glob("*.py"))
+
+
+def toggle_adapter_enabled(path: str | Path) -> bool:
+    """切換 adapter 啟用狀態；回傳切換後是否啟用。"""
+    path = Path(path)
+    marker = path.with_suffix(path.suffix + ".disabled")
+    if marker.exists():
+        marker.unlink()
+        return True
+    marker.write_text("停用此 adapter 的標記檔。", encoding="utf-8")
+    return False
+
+
+def adapter_is_enabled(path: str | Path) -> bool:
+    path = Path(path)
+    return not path.with_suffix(path.suffix + ".disabled").exists()

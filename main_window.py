@@ -3,6 +3,8 @@ import sys
 import threading
 import json
 import time
+import uuid
+import shutil
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from urllib.parse import urlparse
@@ -26,17 +28,21 @@ from PyQt6.QtWidgets import (
     QSpinBox,
     QDialog,
     QAbstractItemView,
+    QSystemTrayIcon,
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
-from PyQt6.QtGui import QFont
+from PyQt6.QtGui import QFont, QDesktopServices
+from PyQt6.QtCore import QUrl
 
-from downloader_task import Cancelled, download_novel
+from downloader_task import Cancelled, download_novel, cache_root
 from fetcher import Fetcher
 from adapter_tools import (
     install_adapter_file,
     list_user_adapter_files,
     user_adapter_dir,
     write_generated_adapter,
+    toggle_adapter_enabled,
+    adapter_is_enabled,
 )
 from textfilter import ensure_rules_file, rules_path
 from PyQt6.QtWidgets import QComboBox
@@ -81,6 +87,14 @@ def classify_download_error(error) -> str:
     return text
 
 
+class QueueTreeWidget(QTreeWidget):
+    order_changed = pyqtSignal()
+
+    def dropEvent(self, event):
+        super().dropEvent(event)
+        self.order_changed.emit()
+
+
 class QueueThread(QThread):
     """以可設定的工作數並行處理書籍；每本書內的章節仍依序下載。"""
 
@@ -92,7 +106,8 @@ class QueueThread(QThread):
     sig_all_done = pyqtSignal()
 
     def __init__(self, jobs, output_dir, delay, max_workers=2, max_workers_per_site=6,
-                 retries=5, output_format="txt", site_settings=None, filename_format="title"):
+                 retries=5, output_format="txt", site_settings=None, filename_format="title",
+                 site_cookies=None):
         super().__init__()
         self.jobs = jobs
         self.output_dir = output_dir
@@ -103,6 +118,7 @@ class QueueThread(QThread):
         self.output_format = output_format
         self.site_settings = site_settings or {}
         self.filename_format = filename_format
+        self.site_cookies = site_cookies or {}
         self._stop_event = threading.Event()
         self._jobs_lock = threading.Lock()
         for job in self.jobs:
@@ -220,12 +236,21 @@ class QueueThread(QThread):
 
                 job_delay = float(self.site_settings.get(job.get("site_key", ""), {}).get(
                     "delay", self.delay))
+                site_settings = self.site_settings.get(job.get("site_key", ""), {})
+                request_headers = {}
+                if site_settings.get("user_agent"):
+                    request_headers["User-Agent"] = site_settings["user_agent"]
+                if site_settings.get("referer"):
+                    request_headers["Referer"] = site_settings["referer"]
+                if self.site_cookies.get(job.get("site_key", "")):
+                    request_headers["Cookie"] = self.site_cookies[job["site_key"]]
                 download_novel(
                     job["url"], self.output_dir, job["title"], job_delay, cb,
                     start=job["start"], end=job["end"],
                     cancel_check=lambda: self._job_cancel_requested(row),
                     retries=self.retries, output_format=self.output_format,
                     filename_format=self.filename_format,
+                    request_headers=request_headers,
                 )
                 job["status"] = "done"
                 self.sig_job_status.emit(row, "done")
@@ -241,11 +266,25 @@ class QueueThread(QThread):
                     self.sig_job_log.emit(row, "已停止；重新開始會從快取續傳。")
                     self.sig_log.emit(f"[{prefix}] 已停止；重新開始會從快取續傳。")
             except Exception as e:
+                if self._is_transient_error(e) and job.get("auto_retry", 0) < 2:
+                    job["auto_retry"] = job.get("auto_retry", 0) + 1
+                    job["status"] = "pending"
+                    wait_seconds = 3 * job["auto_retry"]
+                    self.sig_job_status.emit(row, "pending")
+                    self.sig_job_log.emit(row, f"網路中斷，{wait_seconds} 秒後自動恢復（第 {job['auto_retry']}/2 次）")
+                    self.sig_log.emit(f"[{prefix}] 網路中斷，將自動恢復。")
+                    self._stop_event.wait(wait_seconds)
+                    continue
                 job["status"] = "failed"
                 detail = classify_download_error(e)
                 self.sig_job_status.emit(row, "failed")
                 self.sig_job_log.emit(row, f"✗ 下載失敗：{detail}")
                 self.sig_log.emit(f"[{prefix}] ✗ 下載失敗：{detail}")
+
+    @staticmethod
+    def _is_transient_error(error):
+        text = str(error).lower()
+        return any(word in text for word in ("timeout", "timed out", "connection", "temporarily", "503", "502", "504"))
 
     def run(self):
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
@@ -268,7 +307,12 @@ class NovelDownloaderUI(QMainWindow):
         self.queue_file = (Path(sys.executable).parent if getattr(sys, "frozen", False)
                            else Path(__file__).parent) / "queue.json"
         self.site_settings_file = self.queue_file.parent / "site_settings.json"
+        self.history_file = self.queue_file.parent / "history.json"
         self.site_settings = self.load_site_settings()
+        self.site_cookies = {}
+        self.tray = QSystemTrayIcon(self) if QSystemTrayIcon.isSystemTrayAvailable() else None
+        if self.tray:
+            self.tray.show()
 
         widget = QWidget()
         layout = QVBoxLayout()
@@ -327,10 +371,12 @@ class NovelDownloaderUI(QMainWindow):
         self.import_queue_btn.clicked.connect(self.import_queue)
         queue_tools.addWidget(self.import_queue_btn)
         layout.addLayout(queue_tools)
-        self.queue_list = QTreeWidget()
+        self.queue_list = QueueTreeWidget()
         self.queue_list.setHeaderHidden(True)
         self.queue_list.setMaximumHeight(140)
         self.queue_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.queue_list.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        self.queue_list.order_changed.connect(self.sync_queue_order)
         self.queue_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.queue_list.customContextMenuRequested.connect(self.show_queue_menu)
         layout.addWidget(self.queue_list)
@@ -397,6 +443,10 @@ class NovelDownloaderUI(QMainWindow):
         self.site_settings_btn.setToolTip("為特定網站覆寫延遲與同網站並行上限")
         self.site_settings_btn.clicked.connect(self.edit_site_settings)
         dir_layout.addWidget(self.site_settings_btn)
+        self.cookies_btn = QPushButton("Cookie...")
+        self.cookies_btn.setToolTip("匯入目前瀏覽器 Cookie；只保存在本次執行期間")
+        self.cookies_btn.clicked.connect(self.edit_cookies)
+        dir_layout.addWidget(self.cookies_btn)
         dir_layout.addWidget(QLabel("重試:"))
         self.retry_input = QSpinBox()
         self.retry_input.setRange(1, 10)
@@ -422,6 +472,12 @@ class NovelDownloaderUI(QMainWindow):
         self.adapter_btn = QPushButton("Adapter 工具...")
         self.adapter_btn.clicked.connect(self.edit_adapters)
         dir_layout.addWidget(self.adapter_btn)
+        self.history_btn = QPushButton("下載歷史")
+        self.history_btn.clicked.connect(self.show_history)
+        dir_layout.addWidget(self.history_btn)
+        self.cache_btn = QPushButton("清理快取")
+        self.cache_btn.clicked.connect(self.clear_cache)
+        dir_layout.addWidget(self.cache_btn)
         layout.addLayout(dir_layout)
 
         # --- 進度與日誌 ---
@@ -476,6 +532,26 @@ class NovelDownloaderUI(QMainWindow):
         item = self.queue_list.topLevelItem(row)
         return item if item else None
 
+    def make_job_item(self, job):
+        job.setdefault("id", uuid.uuid4().hex)
+        item = QTreeWidgetItem([self.job_text(job)])
+        item.setData(0, Qt.ItemDataRole.UserRole, job["id"])
+        return item
+
+    def sync_queue_order(self):
+        if self.thread and self.thread.isRunning():
+            return
+        by_id = {job.get("id"): job for job in self.jobs}
+        ordered = []
+        for row in range(self.queue_list.topLevelItemCount()):
+            item = self.queue_list.topLevelItem(row)
+            job = by_id.get(item.data(0, Qt.ItemDataRole.UserRole))
+            if job:
+                ordered.append(job)
+        if len(ordered) == len(self.jobs):
+            self.jobs[:] = ordered
+            self.save_queue()
+
     def add_job(self):
         url = self.url_input.text().strip()
         if not url:
@@ -493,8 +569,9 @@ class NovelDownloaderUI(QMainWindow):
         job = {"url": url, "title": self.title_input.text().strip(),
                "start": start, "end": end, "status": "pending",
                "site_key": site_key_for_url(url)}
+        job["id"] = uuid.uuid4().hex
         self.jobs.append(job)
-        self.queue_list.addTopLevelItem(QTreeWidgetItem([self.job_text(job)]))
+        self.queue_list.addTopLevelItem(self.make_job_item(job))
         self.save_queue()
         self.url_input.clear()
         self.title_input.clear()
@@ -616,7 +693,68 @@ class NovelDownloaderUI(QMainWindow):
             item.setText(0, self.job_text(self.jobs[row]))
             if status in ("running", "failed", "stopped"):
                 item.setExpanded(True)
+        if status == "done":
+            self.record_history(self.jobs[row])
         self.save_queue()
+
+    def record_history(self, job):
+        try:
+            history = json.loads(self.history_file.read_text(encoding="utf-8"))
+            if not isinstance(history, list):
+                history = []
+        except (OSError, ValueError):
+            history = []
+        if any(item.get("id") == job.get("id") for item in history):
+            return
+        history.append({"id": job.get("id"), "url": job["url"], "title": job.get("title", ""),
+                        "site_key": job.get("site_key", ""), "completed_at": time.strftime("%Y-%m-%d %H:%M:%S")})
+        try:
+            self.history_file.write_text(json.dumps(history[-500:], ensure_ascii=False, indent=2), encoding="utf-8")
+        except OSError:
+            pass
+
+    def show_history(self):
+        try:
+            history = json.loads(self.history_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            history = []
+        dlg = QDialog(self)
+        dlg.setWindowTitle("下載歷史")
+        dlg.resize(700, 420)
+        v = QVBoxLayout()
+        editor = QTextEdit()
+        editor.setReadOnly(True)
+        editor.setPlainText("\n".join(
+            f"{item.get('completed_at', '')} | {item.get('site_key', '')} | "
+            f"{item.get('title') or '(自動書名)'} | {item.get('url', '')}"
+            for item in reversed(history if isinstance(history, list) else [])
+        ) or "尚無完成下載紀錄。")
+        v.addWidget(editor)
+        close_btn = QPushButton("關閉")
+        close_btn.clicked.connect(dlg.accept)
+        v.addWidget(close_btn)
+        dlg.setLayout(v)
+        dlg.exec()
+
+    def clear_cache(self):
+        if QMessageBox.question(self, "確認清理快取", f"確定刪除所有快取？\n{cache_root()}") != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            root = cache_root()
+            if root.exists():
+                for child in root.iterdir():
+                    if child.is_dir():
+                        shutil.rmtree(child)
+                    else:
+                        child.unlink()
+            self.log.append("已清理下載快取。")
+        except OSError as exc:
+            QMessageBox.warning(self, "清理失敗", str(exc))
+
+    def notify(self, title, message):
+        if self.tray:
+            self.tray.showMessage(title, message, QSystemTrayIcon.MessageIcon.Information, 5000)
+        QApplication.beep()
 
     def add_job_log(self, row, msg):
         item = self.job_item(row)
@@ -711,6 +849,13 @@ class NovelDownloaderUI(QMainWindow):
             "貼一個網站目錄網址即可產生 adapter 檔；產生後重啟程式會自動載入。\n"
             "若通用解析不夠準，可編輯 user_adapters 裡的 .py 檔再匯入。"))
 
+        remote_form = QHBoxLayout()
+        remote_form.addWidget(QLabel("遠端 .py URL:"))
+        remote_url_input = QLineEdit()
+        remote_url_input.setPlaceholderText("可貼 GitHub raw adapter URL")
+        remote_form.addWidget(remote_url_input)
+        v.addLayout(remote_form)
+
         form = QHBoxLayout()
         form.addWidget(QLabel("網址:"))
         url_input = QLineEdit()
@@ -726,10 +871,16 @@ class NovelDownloaderUI(QMainWindow):
         info = QTextEdit()
         info.setReadOnly(True)
         v.addWidget(info)
+        adapter_combo = QComboBox()
+        v.addWidget(adapter_combo)
 
         def refresh_info(extra=""):
             lines = [f"Adapter 資料夾: {user_adapter_dir()}"]
             files = list_user_adapter_files()
+            adapter_combo.clear()
+            for path in files:
+                state = "啟用" if adapter_is_enabled(path) else "停用"
+                adapter_combo.addItem(f"{path.name} ({state})", str(path))
             lines.append("")
             lines.append("已匯入/產生的 user adapters:")
             if files:
@@ -773,6 +924,22 @@ class NovelDownloaderUI(QMainWindow):
                 return
             refresh_info(f"已匯入: {target}\n請重啟程式後使用新 adapter。")
 
+        def update_remote_adapter():
+            remote_url = remote_url_input.text().strip()
+            if not remote_url or not remote_url.lower().split("?")[0].endswith(".py"):
+                QMessageBox.warning(self, "網址錯誤", "請貼上 .py adapter 的 raw URL")
+                return
+            try:
+                source = Fetcher(encoding="utf-8", delay=0).get(remote_url, retries=2)
+                filename = Path(urlparse(remote_url).path).name
+                target = user_adapter_dir() / filename
+                user_adapter_dir().mkdir(parents=True, exist_ok=True)
+                target.write_text(source, encoding="utf-8")
+                reload_adapter_files()
+                refresh_info(f"已更新遠端 adapter：{target}")
+            except Exception as exc:
+                QMessageBox.warning(self, "更新失敗", str(exc))
+
         def test_adapter_url():
             url = url_input.text().strip()
             if not url:
@@ -814,16 +981,28 @@ class NovelDownloaderUI(QMainWindow):
         generate_btn.clicked.connect(generate_adapter)
         import_btn = QPushButton("匯入 .py Adapter")
         import_btn.clicked.connect(import_adapter)
+        remote_btn = QPushButton("更新遠端 Adapter")
+        remote_btn.clicked.connect(update_remote_adapter)
         test_btn = QPushButton("測試網址")
         test_btn.clicked.connect(test_adapter_url)
         reload_btn = QPushButton("立即重新載入")
         reload_btn.clicked.connect(reload_adapter_files)
+        toggle_btn = QPushButton("切換啟用/停用")
+        def toggle_selected_adapter():
+            path = adapter_combo.currentData()
+            if not path:
+                return
+            toggle_adapter_enabled(path)
+            reload_adapter_files()
+        toggle_btn.clicked.connect(toggle_selected_adapter)
         close_btn = QPushButton("關閉")
         close_btn.clicked.connect(dlg.accept)
         buttons.addWidget(generate_btn)
         buttons.addWidget(import_btn)
+        buttons.addWidget(remote_btn)
         buttons.addWidget(test_btn)
         buttons.addWidget(reload_btn)
+        buttons.addWidget(toggle_btn)
         buttons.addStretch()
         buttons.addWidget(close_btn)
         v.addLayout(buttons)
@@ -850,6 +1029,7 @@ class NovelDownloaderUI(QMainWindow):
             return
         self.start_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
+        self.queue_list.setDragDropMode(QAbstractItemView.DragDropMode.NoDragDrop)
         self.remove_btn.setEnabled(True)
         self.retry_btn.setEnabled(False)
         self.concurrent_input.setEnabled(False)
@@ -865,7 +1045,8 @@ class NovelDownloaderUI(QMainWindow):
         filename_format = self.filename_format_input.currentData()
         self.log.append(f"—— 開始處理隊列，同時下載 {workers} 本；同網站最多 {site_workers} 本 ——")
         self.thread = QueueThread(self.jobs, self.selected_dir, delay, workers, site_workers,
-                                  retries, output_format, self.site_settings, filename_format)
+                                  retries, output_format, self.site_settings, filename_format,
+                                  self.site_cookies)
         self.thread.sig_log.connect(self.log.append)
         self.thread.sig_job_log.connect(self.add_job_log)
         self.thread.sig_progress.connect(self.on_progress)
@@ -900,6 +1081,7 @@ class NovelDownloaderUI(QMainWindow):
         self.purge_removed()
         self.start_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
+        self.queue_list.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
         self.remove_btn.setEnabled(True)
         self.retry_btn.setEnabled(True)
         self.concurrent_input.setEnabled(True)
@@ -908,6 +1090,7 @@ class NovelDownloaderUI(QMainWindow):
         self.output_format_input.setEnabled(True)
         self.filename_format_input.setEnabled(True)
         self.log.append("—— 隊列處理結束 ——")
+        self.notify("小說下載器", "下載隊列處理結束")
         self.save_queue()
 
     def save_queue(self):
@@ -915,7 +1098,7 @@ class NovelDownloaderUI(QMainWindow):
         try:
             data = []
             for job in self.jobs:
-                row = {key: job.get(key) for key in ("url", "title", "start", "end", "status", "site_key")}
+                row = {key: job.get(key) for key in ("id", "url", "title", "start", "end", "status", "site_key")}
                 if row["status"] == "running":
                     row["status"] = "stopped"
                 data.append(row)
@@ -939,7 +1122,7 @@ class NovelDownloaderUI(QMainWindow):
         try:
             rows = []
             for job in self.jobs:
-                row = {key: job.get(key) for key in ("url", "title", "start", "end", "status", "site_key")}
+                row = {key: job.get(key) for key in ("id", "url", "title", "start", "end", "status", "site_key")}
                 if row["status"] in ("running", "removing"):
                     row["status"] = "stopped"
                 rows.append(row)
@@ -969,13 +1152,15 @@ class NovelDownloaderUI(QMainWindow):
                     "start": row.get("start"), "end": row.get("end"),
                     "status": row.get("status", "pending"),
                     "site_key": row.get("site_key") or site_key_for_url(row["url"]),
+                    "id": row.get("id") or uuid.uuid4().hex,
                 }
                 if job["status"] in ("running", "removing", "removed"):
                     job["status"] = "stopped" if job["status"] != "removed" else "removed"
                 if job["status"] not in STATUS_LABEL:
                     job["status"] = "pending"
+                job.setdefault("id", uuid.uuid4().hex)
                 self.jobs.append(job)
-                self.queue_list.addTopLevelItem(QTreeWidgetItem([self.job_text(job)]))
+                self.queue_list.addTopLevelItem(self.make_job_item(job))
                 existing.add(job["url"])
                 added += 1
             self.save_queue()
@@ -990,6 +1175,68 @@ class NovelDownloaderUI(QMainWindow):
         except (OSError, ValueError):
             return {}
 
+    def edit_cookies(self):
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Cookie 匯入（本次執行有效）")
+        dlg.resize(620, 280)
+        v = QVBoxLayout()
+        v.addWidget(QLabel("輸入網站網域；可從 Chrome 讀取 Cookie，或手動貼上 Cookie header。Cookie 不會寫入檔案。"))
+        form = QHBoxLayout()
+        form.addWidget(QLabel("網域:"))
+        domain = QLineEdit()
+        domain.setPlaceholderText("例如 xbanxia.cc")
+        form.addWidget(domain)
+        v.addLayout(form)
+        editor = QTextEdit()
+        editor.setPlaceholderText("name=value; name2=value2")
+        v.addWidget(editor)
+        info = QLabel("")
+        v.addWidget(info)
+        buttons = QHBoxLayout()
+        browser_btn = QPushButton("匯入 Chrome Cookie")
+        open_btn = QPushButton("開啟瀏覽器")
+        save_btn = QPushButton("套用")
+        close_btn = QPushButton("關閉")
+        buttons.addWidget(browser_btn); buttons.addWidget(open_btn); buttons.addWidget(save_btn); buttons.addStretch(); buttons.addWidget(close_btn)
+        v.addLayout(buttons)
+
+        def import_chrome():
+            host = domain.text().strip()
+            if not host:
+                info.setText("請先輸入網域")
+                return
+            try:
+                import browser_cookie3
+                cookies = browser_cookie3.chrome(domain_name=host)
+                header = "; ".join(f"{cookie.name}={cookie.value}" for cookie in cookies)
+                if not header:
+                    raise RuntimeError("Chrome 找不到此網域的 Cookie")
+                editor.setPlainText(header)
+                info.setText(f"已讀取 {len(header.split('; '))} 個 Cookie；按套用後本次下載有效")
+            except Exception as exc:
+                info.setText(f"讀取失敗：{exc}")
+
+        def apply_cookie():
+            host = domain.text().strip().lower()
+            value = editor.toPlainText().strip()
+            if not host or not value:
+                info.setText("網域與 Cookie 都不可為空")
+                return
+            self.site_cookies[host] = value
+            info.setText(f"已套用 {host} Cookie")
+
+        def open_browser():
+            host = domain.text().strip()
+            if host:
+                QDesktopServices.openUrl(QUrl("https://" + host))
+
+        browser_btn.clicked.connect(import_chrome)
+        open_btn.clicked.connect(open_browser)
+        save_btn.clicked.connect(apply_cookie)
+        close_btn.clicked.connect(dlg.accept)
+        dlg.setLayout(v)
+        dlg.exec()
+
     def edit_site_settings(self):
         """編輯各網站的覆寫值：每行 domain | delay | max_workers。"""
         dlg = QDialog(self)
@@ -997,8 +1244,8 @@ class NovelDownloaderUI(QMainWindow):
         dlg.resize(620, 420)
         v = QVBoxLayout()
         v.addWidget(QLabel(
-            "每行一個網站設定，格式：domain | 延遲秒數 | 同網站最多\n"
-            "例如：69shuba.tw | 3 | 1；未列出的網站使用上方全域設定。"))
+            "每行格式：domain | 延遲秒數 | 同網站最多 | User-Agent(可空) | Referer(可空)\n"
+            "例如：69shuba.tw | 3 | 1 | Mozilla/5.0 | https://69shuba.tw/"))
         editor = QTextEdit()
         domains = sorted(set(self.site_settings) | {
             self.job_site_label(job) for job in self.jobs
@@ -1007,7 +1254,8 @@ class NovelDownloaderUI(QMainWindow):
         for domain in domains:
             item = self.site_settings.get(domain, {})
             lines.append(f"{domain} | {item.get('delay', self.delay_input.text() or 2.0)} | "
-                         f"{item.get('max_workers', self.site_concurrent_input.value())}")
+                         f"{item.get('max_workers', self.site_concurrent_input.value())} | "
+                         f"{item.get('user_agent', '')} | {item.get('referer', '')}")
         editor.setPlainText("\n".join(lines))
         v.addWidget(editor)
         buttons = QHBoxLayout()
@@ -1022,7 +1270,7 @@ class NovelDownloaderUI(QMainWindow):
                 parts = [part.strip() for part in line.split("|")]
                 if not line.strip():
                     continue
-                if len(parts) != 3 or not parts[0]:
+                if len(parts) not in (3, 5) or not parts[0]:
                     QMessageBox.warning(dlg, "格式錯誤", f"無法解析：{line}")
                     return
                 try:
@@ -1032,6 +1280,8 @@ class NovelDownloaderUI(QMainWindow):
                     QMessageBox.warning(dlg, "格式錯誤", f"延遲或並行數不是數字：{line}")
                     return
                 settings[parts[0]] = {"delay": delay, "max_workers": max_workers}
+                if len(parts) == 5:
+                    settings[parts[0]].update({"user_agent": parts[3], "referer": parts[4]})
             self.site_settings = settings
             try:
                 self.site_settings_file.write_text(
@@ -1062,13 +1312,15 @@ class NovelDownloaderUI(QMainWindow):
                 "start": row.get("start"), "end": row.get("end"),
                 "status": row.get("status", "pending"),
                 "site_key": row.get("site_key") or site_key_for_url(row["url"]),
+                "id": row.get("id") or uuid.uuid4().hex,
             }
             if job["status"] == "running":
                 job["status"] = "stopped"
             if job["status"] not in STATUS_LABEL:
                 job["status"] = "pending"
+            job.setdefault("id", uuid.uuid4().hex)
             self.jobs.append(job)
-            self.queue_list.addTopLevelItem(QTreeWidgetItem([self.job_text(job)]))
+            self.queue_list.addTopLevelItem(self.make_job_item(job))
 
 
 if __name__ == "__main__":

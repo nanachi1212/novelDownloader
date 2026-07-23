@@ -19,13 +19,14 @@ class FetchError(RuntimeError):
 
 
 class Fetcher:
-    def __init__(self, encoding="utf-8", delay=2.0, impersonate="chrome131"):
+    def __init__(self, encoding="utf-8", delay=2.0, impersonate="chrome131", headers=None):
         # encoding=None 表示依回應自動偵測(HTTP 標頭 → meta charset → utf-8/gbk 試錯)
         self.session = requests.Session(impersonate=impersonate)
         self.encoding = encoding
         self.delay = delay
         self.last_url = None  # 自動當下一次請求的 Referer
         self.current_delay = delay  # 動態調整(429 時加倍)
+        self.extra_headers = headers or {}
 
     def get(self, url, referer=None, retries=5):
         headers = {
@@ -39,6 +40,7 @@ class Fetcher:
         ref = referer or self.last_url
         if ref:
             headers["Referer"] = ref
+        headers.update({k: v for k, v in self.extra_headers.items() if v})
 
         last_err = None
         for attempt in range(1, retries + 1):
