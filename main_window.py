@@ -48,7 +48,7 @@ from textfilter import ensure_rules_file, rules_path
 from PyQt6.QtWidgets import QComboBox
 from sites import ADAPTERS, USER_ADAPTER_ERRORS, get_adapter, reload_adapters
 
-APP_VERSION = "1.4.0"
+APP_VERSION = "1.5.4"
 
 STATUS_LABEL = {
     "pending": "⏳ 等待",
@@ -319,8 +319,10 @@ class NovelDownloaderUI(QMainWindow):
         self.chapter_progress = {}
         self.queue_file = (Path(sys.executable).parent if getattr(sys, "frozen", False)
                            else Path(__file__).parent) / "queue.json"
+        self.preferences_file = self.queue_file.parent / "preferences.json"
         self.site_settings_file = self.queue_file.parent / "site_settings.json"
         self.history_file = self.queue_file.parent / "history.json"
+        self.load_preferences()
         self.site_settings = self.load_site_settings()
         self.site_cookies = {}
         self.tray = QSystemTrayIcon(self) if QSystemTrayIcon.isSystemTrayAvailable() else None
@@ -1058,6 +1060,26 @@ class NovelDownloaderUI(QMainWindow):
         if d:
             self.selected_dir = Path(d)
             self.dir_label.setText(d)
+            self.save_preferences()
+
+    def load_preferences(self):
+        """載入 GUI 偏好設定；目前記住上次選擇的儲存位置。"""
+        try:
+            data = json.loads(self.preferences_file.read_text(encoding="utf-8"))
+            saved_dir = data.get("output_dir") if isinstance(data, dict) else None
+            if saved_dir:
+                self.selected_dir = Path(saved_dir).expanduser()
+        except (OSError, ValueError, TypeError):
+            pass
+
+    def save_preferences(self):
+        try:
+            self.preferences_file.write_text(
+                json.dumps({"output_dir": str(self.selected_dir)}, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except OSError as exc:
+            self.log.append(f"儲存偏好設定失敗：{exc}")
 
     def start_queue(self):
         if not any(j["status"] == "pending" for j in self.jobs):
