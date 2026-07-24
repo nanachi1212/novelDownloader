@@ -105,13 +105,18 @@ class XbanxiaAdapter(SiteAdapter):
             for elem in article.find_all(class_=cls):
                 elem.decompose()
 
-        # 移除推薦區域
+        # 移除推薦區域。先收集區塊再刪除，避免刪除父節點後，後續
+        # NavigableString 已被 BeautifulSoup 脫離樹狀結構而沒有 parent。
+        recommendation_parents = []
         for elem in article.find_all(string=re.compile(r"每日推薦|推薦閱讀")):
-            parent = elem.parent
-            if parent:
-                parent_parent = parent.parent
-                if parent_parent:
-                    parent_parent.decompose()
+            parent = getattr(elem, "parent", None)
+            parent_parent = getattr(parent, "parent", None)
+            # 推薦文字若直接位於 article 子節點，不能把整個 article 刪掉。
+            candidate = parent if getattr(parent_parent, "name", None) == "article" else parent_parent
+            if candidate and candidate not in recommendation_parents:
+                recommendation_parents.append(candidate)
+        for parent in recommendation_parents:
+            parent.decompose()
 
         # 提取文字
         text = article.get_text()

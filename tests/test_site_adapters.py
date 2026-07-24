@@ -4,6 +4,7 @@ from sites.czbooks import CzbooksAdapter
 from sites.novel543 import Novel543Adapter
 from sites.shuba69 import Shuba69
 from sites.shuku52 import Shuku52Adapter
+from sites.xbanxia import XbanxiaAdapter
 
 
 def test_shuku52_catalog_normalization_and_parsing():
@@ -37,6 +38,20 @@ def test_shuku52_chapter_extracts_only_article_content():
     <div>站外雜訊</div>
     """
     assert adapter.parse_chapter(html) == "第一段正文\n\n第二段正文"
+
+
+def test_xbanxia_repeated_recommendations_do_not_break_string_parent():
+    adapter = XbanxiaAdapter()
+    html = """
+    <article>
+      <p>第一段正文</p>
+      <div>每日推薦：甲</div>
+      <p>第二段正文</p>
+      <div>推薦閱讀：乙</div>
+      <p>第三段正文</p>
+    </article>
+    """
+    assert adapter.parse_chapter(html) == "第一段正文\n\n第二段正文\n\n第三段正文"
 
 
 def test_novel543_urls_meta_and_catalog():
