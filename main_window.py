@@ -48,7 +48,7 @@ from textfilter import ensure_rules_file, rules_path
 from PyQt6.QtWidgets import QComboBox
 from sites import ADAPTERS, USER_ADAPTER_ERRORS, get_adapter, reload_adapters
 
-APP_VERSION = "1.5.4"
+APP_VERSION = "1.5.5"
 
 STATUS_LABEL = {
     "pending": "⏳ 等待",

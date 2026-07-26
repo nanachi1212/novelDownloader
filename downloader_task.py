@@ -36,6 +36,28 @@ def output_basename(title: str, author: str, site: str, pattern: str = "title") 
     return safe_filename(name)
 
 
+def chapter_number_warning(chapters) -> str:
+    nums = []
+    for ch in chapters:
+        match = re.search(r"第\s*(\d+)\s*章", ch.title)
+        if match:
+            nums.append(int(match.group(1)))
+    if not nums:
+        return ""
+    max_num = max(nums)
+    repeated = len(nums) - len(set(nums))
+    if len(chapters) <= max_num and not repeated:
+        return ""
+    parts = [
+        f"[章號提示] 目錄有 {len(chapters)} 個章節連結",
+        f"標題最大章號為 {max_num}",
+    ]
+    if repeated:
+        parts.append(f"偵測到重複章號 {repeated} 個")
+    parts.append("網站章號可能不可靠,仍按唯一章節網址下載。")
+    return ",".join(parts)
+
+
 def write_epub(path: Path, title: str, author: str, source: str, chapters: list[tuple[str, str]]):
     """以標準 library 產生可被閱讀器開啟的最小 EPUB 3 檔案。"""
     import uuid
@@ -105,6 +127,10 @@ def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
         book.author = author
     if title_override:
         book.title = title_override
+
+    numbering_warning = chapter_number_warning(book.chapters)
+    if numbering_warning:
+        callback("catalog", 0, 1, numbering_warning)
 
     is_generic = getattr(adapter, "is_generic", False)
     if is_generic:

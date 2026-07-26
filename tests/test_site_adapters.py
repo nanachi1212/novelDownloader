@@ -5,6 +5,7 @@ from sites.novel543 import Novel543Adapter
 from sites.shuba69 import Shuba69
 from sites.shuku52 import Shuku52Adapter
 from sites.xbanxia import XbanxiaAdapter
+from downloader_task import chapter_number_warning
 
 
 def test_shuku52_catalog_normalization_and_parsing():
@@ -93,6 +94,19 @@ def test_novel543_chapter_and_domain_registration():
     assert isinstance(get_adapter("https://www.novel543.com/0710607590/"), Novel543Adapter)
     assert isinstance(
         get_adapter("https://look.thisiscm.com/0710607590/8086_1.html"), Novel543Adapter
+    )
+
+
+def test_chapter_number_warning_reports_site_numbering_drift():
+    chapters = [
+        type("Chapter", (), {"title": "第1章 一"})(),
+        type("Chapter", (), {"title": "第2章 二"})(),
+        type("Chapter", (), {"title": "第2章 另一個二"})(),
+        type("Chapter", (), {"title": "第4章 四"})(),
+    ]
+    assert chapter_number_warning(chapters) == (
+        "[章號提示] 目錄有 4 個章節連結,標題最大章號為 4,"
+        "偵測到重複章號 1 個,網站章號可能不可靠,仍按唯一章節網址下載。"
     )
 
 
