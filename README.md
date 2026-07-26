@@ -1,122 +1,71 @@
-# novel-downloader 小說下載器
+# novelDownloader 小說下載器
 
-輸入小說目錄頁(或簡介頁)網址,自動下載全書、過濾廣告、合併成單一 TXT。
+輸入小說目錄頁或簡介頁網址，自動下載章節、過濾廣告，輸出 TXT 或 EPUB。
 
-## 用法
+## GUI
 
-### GUI 版(推薦)
+最新版 Windows 執行檔請到 GitHub Releases 下載：
 
-直接雙擊 `E:\AI gravity project\novelDownloader.exe`:
+- https://github.com/nanachi1212/novelDownloader/releases
 
-1. **貼上目錄頁網址**,可選填書名覆寫、起始章/結束章 → 按「**加入隊列**」
-2. 重複步驟 1 可排多本書(**下載隊列**,下載中也能繼續加)
-3. 選儲存位置、調整延遲(預設 2.0 秒)、「同時下載」數量(1～10 本,預設 10 本)、「同網站最多」數量(1～6 本,預設 6 本)、重試次數與輸出格式(TXT/EPUB)；需要時按「網站設定...」為個別網站覆寫延遲與並行上限
-4. 按「**開始下載**」;「停止」會在章節邊界安全中止,重新開始會從快取續傳
-5. 失敗或停止的任務可按「失敗/停止的重設為等待」重跑
-6. 可選取單一本按「單獨開始」或「單獨停止」；下載途中也可按「移除選中」，程式會先安全停止再移除；「移除已完成」在下載中也能使用，完成項目會立即從畫面隱藏，隊列結束後安全清理
-7. 隊列上方可搜尋／篩選，多選後使用「批次開始」「批次停止」或「移除選中」；也可匯出／匯入 JSON 隊列
-8. 隊列可在未下載時拖曳排序；完成任務會記錄到「下載歷史」，「清理快取」可刪除已下載的章節快取
+基本流程：
 
-隊列會自動保存到程式旁的 `queue.json`；重新開啟 GUI 會恢復等待、失敗或已停止的任務。相同網址若已在隊列中（包括下載中、等待中及尚未清理的完成項目），再次加入時會提示並阻止重複下載；匯入 JSON 隊列也會自動略過重複網址。重試次數只控制單一網頁請求的重試，403/IP 封鎖仍需更換網路或等待解封。
+1. 貼上小說網址，可選填書名、起始章與結束章。
+2. 按「加入隊列」，可一次排多本書。
+3. 選儲存位置、延遲、同時下載數、同網站上限、重試次數與輸出格式。
+4. 按「開始下載」。停止會在章節邊界中止，重跑會沿用快取續傳。
 
-「網站設定...」會保存到 `site_settings.json`，每行格式為 `domain | 延遲秒數 | 同網站最多`，例如 `69shuba.tw | 3 | 1`。
+隊列支援搜尋、篩選、拖曳排序、匯入/匯出 JSON、單本開始/停止、移除已完成、右鍵複製網址，以及每本書折疊式進度。
 
-並行只發生在不同小說之間；同一本書的章節仍依序下載。「同時下載」是整個隊列的總上限；「同網站最多」是同一網站的上限。預設 `同網站最多 6` 不會降低原本速度；遇到封鎖或逾時時,再把「同網站最多」降為 1～2 並提高章節延遲。
+## CLI
 
-快取位置:EXE 旁邊的 `cache\` 資料夾(按 站名-書號 分資料夾,重抓同一本書不會重新下載已完成的章節)。
-
-### Adapter 工具(新增網站)
-
-GUI 內建的「Adapter 工具...」可以不修改主程式就新增網站解析規則：
-
-1. 開啟「Adapter 工具...」，貼上網站的小說目錄網址。
-2. 按「產生 Adapter」，可選填檔名；程式會在 EXE 同層建立 `user_adapters\\` 資料夾與 `.py` 範本。
-3. 若範本需要調整，直接用文字編輯器修改 `user_adapters\\你的檔名.py`；至少確認 `domains`、`catalog_url()`、`parse_catalog()` 與 `parse_chapter()`。
-4. 回到 GUI 按「匯入 .py Adapter」可複製其他來源的 adapter 檔案；按「立即重新載入」即可在不重啟程式的情況下套用。
-5. 重新貼上該網站目錄網址測試；若網站不在內建清單，會由通用 adapter 先嘗試解析，專用 adapter 則會優先匹配其 `domains`。
-
-`user_adapters` 內的 Python 檔案會在程式啟動時載入並執行，請只匯入自己編寫或信任來源的檔案。網站使用 Cloudflare、驗證碼或封鎖 IP 時，Adapter 只能負責解析，無法解除伺服器封鎖。
-
-輸出檔名可在 GUI 選擇「書名」、「作者_書名」或「網站_書名」；進度列下方會顯示目前平均章節速度與預估剩餘時間。錯誤日誌會將 403、429、Cloudflare 與連線逾時分開提示。
-
-「Cookie...」可從 Chrome 讀取指定網域 Cookie，或手動貼上 Cookie header；Cookie 只保存在本次程式執行期間。網站設定可額外指定 User-Agent 與 Referer。網路逾時或 5xx 服務暫時錯誤時，任務會自動等待後最多恢復 2 次。
-
-GUI 的「Adapter 工具...」可做兩件事:
-
-1. **產生 Adapter**:貼上網站目錄頁 URL,程式會在 EXE 旁的 `user_adapters\` 產生一個 `.py` adapter。預設會固定該網域並沿用通用解析器,重啟程式後自動載入。
-2. **匯入 .py Adapter**:把已寫好的 adapter 檔複製到 `user_adapters\`,重啟後自動加入支援清單。
-
-產生的 adapter 是可編輯的 Python 檔；如果通用解析器抓不準,只要改該檔的 `parse_catalog()` / `parse_chapter()` 即可,不用改主程式或 `sites\__init__.py`。注意:adapter `.py` 會被程式載入執行,只匯入可信任來源的檔案。
-
-### 命令列版(進階)
-
-```
-cd "E:\AI gravity project\novel-downloader"
+```powershell
 python novel_dl.py https://www.69shuba.com/book/67964.htm
-python novel_dl.py <網址> --start 100 --end 200   # 只下載第 100~200 章
+python novel_dl.py <網址> --start 100 --end 200
 ```
 
-參數:`--out 輸出資料夾`、`--delay 秒`、`--start N`、`--end N`、`--limit N`、`--title 書名覆寫`
+常用參數：
 
-選項:
-
-| 參數 | 說明 |
-|------|------|
-| `--out 路徑` | 輸出 TXT 位置(預設 `E:\AI gravity project\{書名}.txt`) |
-| `--delay 秒` | 章節間延遲(預設 0.5,被擋的話調大) |
-| `--limit N` | 只下載前 N 章(測試用) |
-
-- **斷點續傳**:每章存在 `cache\`,中斷後重跑同一指令會跳過已下載的章節。想強制重抓就刪掉 `cache\{站名-書號}\`。
-- 輸出為 UTF-8 純文字,保留原文簡體。
-
-## 廣告過濾方式
-
-1. **DOM 結構過濾**(主要):章節頁廣告是獨立元素(`div.contentadv`、`div.bottom-ad` 等),連同 script/連結一併移除,不會誤刪正文
-2. **文字規則**(安全網):逐行過濾含「69书吧」、網址、「本章未完点击下一页」、「(本章完)」等行
-3. **跨章重複樣板自動偵測**(`textfilter.py`):合併輸出前統計段落,同一段文字出現在 ≥30% 章節(至少 3 章、含實際文字、非純符號分隔線)就視為網站宣傳/廣告樣板自動移除,日誌會列出移除了什麼
-4. **自訂規則**(`filter_rules.txt`,GUI「過濾規則...」按鈕可直接編輯):一行一條,直接寫文字 = 段落包含即移除;`re:` 開頭 = 正則;`#` = 註解
-
-第 3、4 層在「合併輸出」階段執行、不動每章快取——改完規則重跑同一本書,會用快取重新過濾,不需重新下載。
+- `--out 路徑`：輸出資料夾
+- `--delay 秒`：章節間延遲
+- `--start N` / `--end N`：下載章節範圍
+- `--limit N`：只下載前 N 章
+- `--title 書名`：覆寫書名
 
 ## 支援網站
 
-專屬 adapter(解析最精準):
+內建專用 adapter：
 
-- 69shuba.com(69书吧) — 簡體中文、GBK 編碼
-- sunzhinan.com(醋溜儿文学) — 簡體中文、多頁章節自動縫接
-- czbooks.net(小說狂人) — 繁體中文、簡碼 URL
-- xbanxia.cc(半夏小說) — 繁體中文
-- 52shuku.net(52書庫) — 目錄式連續閱讀頁
-- novel543.com(稷下書院) — 完整目錄、輪替閱讀網域與 JavaScript 跳轉
-- 8book.com(無限小說) — 繁體中文、輪替閱讀網域
-- 69shuba.tw — 69书吧台灣網域與 `indexlist` 目錄路徑
+- 69shuba.com / 69shuba.tw
+- czbooks.net
+- xbanxia.cc
+- sunzhinan.com
+- 52shuku.net
+- novel543.com
+- 8book.com
 
-**其他網站:通用自動偵測**(`sites/generic.py`)。貼任何小說目錄頁網址就會嘗試下載,原理:
+其他網站會使用通用 adapter 嘗試解析。若通用模式失敗，可用 GUI 的「Adapter 工具...」產生或匯入自訂 adapter。
 
-1. 目錄:同站連結按 URL 模式分群,最大群 = 章節列表;再找涵蓋 ≥90% 章節連結的最深 DOM 容器,以容器內順序為準(自動排除「最新章節」區塊)
-2. 正文:文字密度最高、連結最少的區塊(瀏覽器閱讀模式原理),連結與 UI 雜訊整批移除
-3. 編碼自動偵測(HTTP 標頭 → meta charset → utf-8/gbk 試錯)、書名作者優先讀 `og:novel:*` meta
-4. 多頁章節:偵測「下一页/下一頁」且網址只差頁碼字尾才視為同章,沿用縫接去重
-5. 短跳轉頁:自動跟隨最多 5 次 `window.location.href` 跳轉,沿用同一 session、Cookie 與 Referer
+## 快取與設定
 
-**預檢防呆**:通用模式會先顯示偵測到的第一章/最後一章;目錄少於 3 章、或第一章解析出的內文過短,會直接報錯中止而不是輸出垃圾。JS 動態載入目錄的網站通用模式吃不下,仍需寫專屬 adapter。
+程式會在執行檔旁保存：
 
-### 手動新增其他網站(通用模式失敗時)
+- `cache/`：章節快取
+- `queue.json`：下載隊列
+- `site_settings.json`：網站延遲、並行、User-Agent、Referer 設定
+- `user_adapters/`：使用者自訂 adapter
 
-推薦先用 GUI「Adapter 工具...」產生/匯入。若要直接改 source:
+這些都是本機執行資料，不應提交到 repo。
 
-1. 在 `sites\` 加一個檔案,繼承 `SiteAdapter`(見 `sites\base.py`),實作:
-   - `domains`:網域清單
-   - `encoding`:頁面編碼
-   - `catalog_url()` / `book_id()` / `parse_catalog()` / `parse_chapter()`
-   - 選配 `meta_url()` / `parse_meta()`(書名作者在別頁時)
-   - 選配 `next_page_url()`(一章拆成多頁的網站:回傳同章下一頁網址,主程式會自動逐頁抓完串接,並去除頁面交界重複的段落;注意要區分「同章下一頁」和「下一章」,通常看網址是 `456_2.html` 頁碼字尾還是章節 id 變了)
-2. 在 `sites\__init__.py` 的 `ADAPTERS` 加上新 class
+## 開發
 
-## 相依套件
-
-```
-pip install curl_cffi beautifulsoup4 lxml
+```powershell
+pip install curl_cffi beautifulsoup4 lxml PyQt6 pytest
+python -m pytest
 ```
 
-`curl_cffi` 負責模擬真實瀏覽器的 TLS 指紋以通過 Cloudflare。注意:69shuba 的章節頁必須由同一個 session 先訪過目錄頁才抓得到(程式已自動處理)。
+打包 Windows GUI：
+
+```powershell
+python -m PyInstaller gui_launcher.py --onefile --windowed --noconfirm --name novelDownloader-vX.Y.Z --add-data "sites;sites" --hidden-import curl_cffi
+```

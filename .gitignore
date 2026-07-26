@@ -1,5 +1,8 @@
 cache/
 __pycache__/
+build/
+dist/
+*.exe
 .venv/
 *.pyc
 .DS_Store

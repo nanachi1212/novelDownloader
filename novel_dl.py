@@ -13,7 +13,7 @@ from pathlib import Path
 
 from downloader_task import download_novel
 
-DEFAULT_OUT_DIR = Path(__file__).resolve().parent.parent  # E:\AI gravity project\
+DEFAULT_OUT_DIR = Path(__file__).resolve().parent.parent
 
 
 def main():
