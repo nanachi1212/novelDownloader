@@ -58,6 +58,28 @@ def chapter_number_warning(chapters) -> str:
     return ",".join(parts)
 
 
+def fetch_parsed_chapter(fetcher, adapter, chapter, retries: int) -> str:
+    last_err = None
+    for _ in range(max(retries, 1)):
+        try:
+            html = fetcher.get(chapter.url, retries=1)
+            source_url = adapter.chapter_source_url(html, chapter.url)
+            if source_url:
+                html = fetcher.get(source_url, referer=chapter.url, retries=1)
+            parts = [adapter.parse_chapter(html, title=chapter.title)]
+            next_url = adapter.next_page_url(html, chapter.url)
+            seen = {chapter.url}
+            while next_url and next_url not in seen:
+                seen.add(next_url)
+                html = fetcher.get(next_url, retries=1)
+                parts.append(adapter.parse_chapter(html, title=chapter.title))
+                next_url = adapter.next_page_url(html, next_url)
+            return join_pages(parts)
+        except ValueError as e:
+            last_err = e
+    raise last_err
+
+
 def write_epub(path: Path, title: str, author: str, source: str, chapters: list[tuple[str, str]]):
     """以標準 library 產生可被閱讀器開啟的最小 EPUB 3 檔案。"""
     import uuid
@@ -165,19 +187,7 @@ def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
         if cache_file.exists():
             content = cache_file.read_text(encoding="utf-8")
         else:
-            html = fetcher.get(ch.url, retries=retries)
-            source_url = adapter.chapter_source_url(html, ch.url)
-            if source_url:
-                html = fetcher.get(source_url, referer=ch.url, retries=retries)
-            parts = [adapter.parse_chapter(html, title=ch.title)]
-            next_url = adapter.next_page_url(html, ch.url)
-            seen = {ch.url}
-            while next_url and next_url not in seen:
-                seen.add(next_url)
-                html = fetcher.get(next_url, retries=retries)
-                parts.append(adapter.parse_chapter(html, title=ch.title))
-                next_url = adapter.next_page_url(html, next_url)
-            content = join_pages(parts)
+            content = fetch_parsed_chapter(fetcher, adapter, ch, retries)
             if is_generic and n == 1 and len(content) < 80:
                 raise ValueError(
                     f"[自動偵測] 第一章只解析出 {len(content)} 字,通用模式可能抓錯正文區塊,"
