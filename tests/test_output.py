@@ -1,6 +1,6 @@
 from zipfile import ZipFile
 
-from downloader_task import fetch_parsed_chapter, write_epub
+from downloader_task import atomic_write_text, fetch_parsed_chapter, safe_filename, unique_chapters, write_epub
 from sites.base import Chapter
 
 
@@ -41,3 +41,26 @@ def test_fetch_parsed_chapter_retries_when_parser_gets_wrong_page():
 
     assert content == "正文"
     assert fetcher.calls == 2
+
+
+def test_unique_chapters_keeps_first_url_and_order():
+    chapters = [
+        Chapter("第一章", "https://example/ch1"),
+        Chapter("第一章重複", "https://example/ch1"),
+        Chapter("第二章", "https://example/ch2"),
+    ]
+
+    assert [chapter.title for chapter in unique_chapters(chapters)] == ["第一章", "第二章"]
+
+
+def test_atomic_write_replaces_part_file(tmp_path):
+    path = tmp_path / "chapter.txt"
+    atomic_write_text(path, "完整正文")
+
+    assert path.read_text(encoding="utf-8") == "完整正文"
+    assert not (tmp_path / "chapter.txt.part").exists()
+
+
+def test_safe_filename_handles_windows_reserved_and_trailing_chars():
+    assert safe_filename("CON") == "_CON"
+    assert safe_filename('書名:*?. ') == "書名___"

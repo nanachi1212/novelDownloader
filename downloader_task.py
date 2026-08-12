@@ -2,6 +2,9 @@
 import re
 import sys
 import html as html_lib
+import json
+import os
+import time
 import zipfile
 from pathlib import Path
 
@@ -22,7 +25,42 @@ def cache_root() -> Path:
 
 
 def safe_filename(name: str) -> str:
-    return re.sub(r'[\\/:*?"<>|]', "_", name).strip() or "novel"
+    cleaned = re.sub(r'[\\/:*?"<>|\x00-\x1f]', "_", name).strip().rstrip(". ")
+    reserved = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
+    if cleaned.upper() in reserved:
+        cleaned = "_" + cleaned
+    return cleaned[:180] or "novel"
+
+
+def atomic_write_text(path: Path, text: str):
+    """同資料夾暫存後替換，避免程序中止留下半截正式檔。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    part = path.with_name(path.name + ".part")
+    part.write_text(text, encoding="utf-8")
+    os.replace(part, path)
+
+
+def save_progress(cache: Path, **values):
+    path = cache / "progress.json"
+    current = {}
+    if path.is_file():
+        try:
+            current = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            current = {}
+    current.update(values, updated_at=int(time.time()))
+    atomic_write_text(path, json.dumps(current, ensure_ascii=False, indent=2))
+
+
+def unique_chapters(chapters):
+    seen = set()
+    result = []
+    for chapter in chapters:
+        key = chapter.url.strip()
+        if key and key not in seen:
+            seen.add(key)
+            result.append(chapter)
+    return result
 
 
 def output_basename(title: str, author: str, site: str, pattern: str = "title") -> str:
@@ -85,7 +123,8 @@ def write_epub(path: Path, title: str, author: str, source: str, chapters: list[
     import uuid
 
     book_id = f"urn:uuid:{uuid.uuid4()}"
-    with zipfile.ZipFile(path, "w") as book:
+    part = path.with_name(path.name + ".part")
+    with zipfile.ZipFile(part, "w") as book:
         book.writestr("mimetype", "application/epub+zip", compress_type=zipfile.ZIP_STORED)
         book.writestr("META-INF/container.xml", """<?xml version="1.0" encoding="UTF-8"?>
 <container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
@@ -120,6 +159,7 @@ def write_epub(path: Path, title: str, author: str, source: str, chapters: list[
 <dc:language>zh-Hant</dc:language><meta property="dcterms:modified">2026-01-01T00:00:00Z</meta></metadata>
 <manifest>{''.join(items)}</manifest><spine>{''.join(spine)}</spine></package>""")
         book.writestr("OEBPS/toc.ncx", "")
+    os.replace(part, path)
 
 
 def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
@@ -164,6 +204,10 @@ def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
                  f"[自動偵測] 未註冊網站,使用通用解析|"
                  f"第一章: {book.chapters[0].title[:20]}|最後一章: {book.chapters[-1].title[:20]}")
 
+    original_count = len(book.chapters)
+    book.chapters = unique_chapters(book.chapters)
+    if len(book.chapters) != original_count:
+        callback("catalog", 0, 1, f"[目錄去重] 移除 {original_count - len(book.chapters)} 個重複章節連結")
     total_all = len(book.chapters)
     lo = max(1, start or 1)
     hi = min(total_all, end or total_all)
@@ -177,6 +221,7 @@ def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
 
     cache = cache_root() / adapter.book_id(url)
     cache.mkdir(parents=True, exist_ok=True)
+    save_progress(cache, url=url, title=book.title, total_chapters=total_all, range=[lo, hi], status="downloading")
 
     results = []  # (章節標題, 內文)
     fetched = 0
@@ -184,18 +229,27 @@ def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
         if cancel_check and cancel_check():
             raise Cancelled("使用者中止,已下載的章節保留在快取,重跑會續傳")
         cache_file = cache / f"{idx:04d}.txt"  # 用全書絕對章號命名,範圍下載也能共用快取
+        content = ""
         if cache_file.exists():
-            content = cache_file.read_text(encoding="utf-8")
-        else:
-            content = fetch_parsed_chapter(fetcher, adapter, ch, retries)
+            try:
+                content = cache_file.read_text(encoding="utf-8").strip()
+            except (OSError, UnicodeError):
+                content = ""
+        if not content:
+            try:
+                content = fetch_parsed_chapter(fetcher, adapter, ch, retries)
+            except Exception as exc:
+                save_progress(cache, status="error", failed_chapter=idx, last_error=str(exc))
+                raise
             if is_generic and n == 1 and len(content) < 80:
                 raise ValueError(
                     f"[自動偵測] 第一章只解析出 {len(content)} 字,通用模式可能抓錯正文區塊,"
                     "已中止下載;請回報網址讓我寫專屬 adapter")
-            cache_file.write_text(content, encoding="utf-8")
+            atomic_write_text(cache_file, content)
             fetched += 1
             fetcher.polite_sleep()
         results.append((ch.title, content))
+        save_progress(cache, completed_chapters=[job_idx for job_idx, _ in jobs[:n]], status="downloading")
         callback("chapter", n, total, f"[{n}/{total}] {ch.title[:30]}")
 
     # 合併前後處理(只動輸出,不動快取):自訂規則 → 跨章重複樣板自動偵測
@@ -223,6 +277,7 @@ def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
                    [(t, c) for (t, _), c in zip(results, contents)])
     else:
         header = f"{book.title}\n作者: {book.author}\n來源: {catalog_url}\n"
-        out.write_text(header + "\n\n" + "\n\n\n".join(texts) + "\n", encoding="utf-8")
+        atomic_write_text(out, header + "\n\n" + "\n\n\n".join(texts) + "\n")
+    save_progress(cache, completed_chapters=[idx for idx, _ in jobs], status="done", output=str(out))
     callback("done", total, total, f"完成!新抓 {fetched} 章、快取 {total - fetched} 章\n輸出: {out}")
     return out
