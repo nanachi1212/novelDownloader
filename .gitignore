@@ -7,4 +7,10 @@ dist/
 *.pyc
 .DS_Store
 build_cache/
-filter_rules.txt
+filter_rules*.txt
+history.json
+preferences.json
+queue.json
+site_settings.json
+novelDownloader.log*
+user_adapters/

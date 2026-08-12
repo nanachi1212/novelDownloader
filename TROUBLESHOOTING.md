@@ -11,7 +11,7 @@
 
 ## 本專案注意事項
 
-先降低並行與增加延遲；保留 cache／queue；網站改版先檢查 adapter
+下載慢可逐步提高章節並行；若出現 403、429 或 Cloudflare，則降低章節並行與同網站並行並增加延遲。保留 cache／queue；網站改版先檢查 adapter。詳細紀錄位於程式旁的 `novelDownloader.log`（最多三份輪替檔）。
 
 ## 不要先做的事
 

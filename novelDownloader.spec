@@ -6,7 +6,10 @@ a = Analysis(
     [this_dir + '\\gui_launcher.py'],
     pathex=[this_dir],
     binaries=[],
-    datas=[(this_dir + '\\sites', 'sites')],
+    datas=[
+        (this_dir + '\\sites', 'sites'),
+        (this_dir + '\\filter_rules*.txt', '.'),
+    ],
     hiddenimports=['curl_cffi', 'browser_cookie3'],
     hookspath=[],
     hooksconfig={},

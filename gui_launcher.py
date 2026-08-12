@@ -11,8 +11,10 @@ sys.path.insert(0, str(app_dir))
 
 from PyQt6.QtWidgets import QApplication
 from main_window import NovelDownloaderUI
+from app_logging import configure_logging
 
 if __name__ == "__main__":
+    configure_logging()
     app = QApplication(sys.argv)
     window = NovelDownloaderUI()
     window.show()

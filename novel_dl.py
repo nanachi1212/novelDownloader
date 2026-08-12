@@ -12,16 +12,20 @@ import sys
 from pathlib import Path
 
 from downloader_task import download_novel
+from app_logging import configure_logging
 
 DEFAULT_OUT_DIR = Path(__file__).resolve().parent.parent
 
 
 def main():
+    configure_logging()
     parser = argparse.ArgumentParser(description="小說下載器(自動過濾廣告)")
     parser.add_argument("url", help="小說目錄頁或簡介頁網址")
     parser.add_argument("--out", help="輸出資料夾(預設: 上層目錄)")
     parser.add_argument("--delay", type=float, default=2.0, help="章節間延遲秒數(預設 2.0,被擋時自動加倍)")
     parser.add_argument("--retries", type=int, default=5, help="每個網頁請求重試次數(預設 5)")
+    parser.add_argument("--timeout", type=float, default=20, help="每次連線逾時秒數(預設 20)")
+    parser.add_argument("--chapter-workers", type=int, default=3, help="單本小說同時下載章節數(預設 3，最高 8)")
     parser.add_argument("--format", choices=("txt", "epub"), default="txt", help="輸出格式(預設 txt)")
     parser.add_argument("--start", type=int, help="起始章(1-based,含)")
     parser.add_argument("--end", type=int, help="結束章(含)")
@@ -48,6 +52,8 @@ def main():
         start=args.start,
         end=end,
         retries=args.retries,
+        timeout=args.timeout,
+        chapter_workers=args.chapter_workers,
         output_format=args.format,
     )
 

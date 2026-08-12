@@ -18,25 +18,40 @@ DEFAULT_RULES_HEADER = """\
 
 
 def rules_dir() -> Path:
-    """規則檔目錄"""
+    """使用者可編輯的規則檔目錄。"""
     if getattr(sys, "frozen", False):
         return Path(sys.executable).parent
     return Path(__file__).parent
+
+
+def bundled_rules_dir() -> Path:
+    """PyInstaller 內建預設規則目錄；原始碼模式與可編輯目錄相同。"""
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        return Path(sys._MEIPASS)
+    return rules_dir()
 
 
 def rules_path(site_hint: str = None) -> Path:
     """per-site 規則優先,全局規則備援。
     site_hint: 網域名或網站識別符,如 'xbanxia.cc' 或 'xbanxia'
     """
-    d = rules_dir()
+    dirs = [rules_dir()]
+    bundled = bundled_rules_dir()
+    if bundled not in dirs:
+        dirs.append(bundled)
     if site_hint:
         # 嘗試 filter_rules_xbanxia.txt 或 filter_rules_xbanxia.cc.txt
         site_clean = site_hint.replace(".", "_").replace("www_", "").lower()
-        site_file = d / f"filter_rules_{site_clean}.txt"
-        if site_file.exists():
-            return site_file
+        for directory in dirs:
+            site_file = directory / f"filter_rules_{site_clean}.txt"
+            if site_file.exists():
+                return site_file
     # 回到全局規則
-    return d / "filter_rules.txt"
+    for directory in dirs:
+        global_file = directory / "filter_rules.txt"
+        if global_file.exists():
+            return global_file
+    return rules_dir() / "filter_rules.txt"
 
 
 def ensure_rules_file(site_hint: str = None) -> Path:

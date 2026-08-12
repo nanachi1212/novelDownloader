@@ -19,7 +19,7 @@ class FetchError(RuntimeError):
 
 
 class Fetcher:
-    def __init__(self, encoding="utf-8", delay=2.0, impersonate="chrome131", headers=None):
+    def __init__(self, encoding="utf-8", delay=2.0, impersonate="chrome131", headers=None, timeout=20):
         # encoding=None 表示依回應自動偵測(HTTP 標頭 → meta charset → utf-8/gbk 試錯)
         self.session = requests.Session(impersonate=impersonate)
         self.encoding = encoding
@@ -27,6 +27,7 @@ class Fetcher:
         self.last_url = None  # 自動當下一次請求的 Referer
         self.current_delay = delay  # 動態調整(429 時加倍)
         self.extra_headers = headers or {}
+        self.timeout = max(1, float(timeout))
 
     def get(self, url, referer=None, retries=5):
         headers = {
@@ -47,7 +48,7 @@ class Fetcher:
             try:
                 current_url = url
                 for redirect_count in range(MAX_JS_REDIRECTS + 1):
-                    r = self.session.get(current_url, headers=headers, timeout=20)
+                    r = self.session.get(current_url, headers=headers, timeout=self.timeout)
                     text = self._decode(r)
 
                     # Some reader sites return a tiny HTML page whose only useful action is

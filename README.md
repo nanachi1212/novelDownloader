@@ -12,7 +12,7 @@
 
 1. 貼上小說網址，可選填書名、起始章與結束章。
 2. 按「加入隊列」，可一次排多本書。
-3. 選儲存位置、延遲、同時下載數、同網站上限、重試次數與輸出格式。
+3. 選儲存位置、延遲、同時下載數、章節並行、timeout、重試次數與輸出格式。
 4. 按「開始下載」。停止會在章節邊界中止，重跑會沿用快取續傳。
 
 隊列支援搜尋、篩選、拖曳排序、匯入/匯出 JSON、單本開始/停止、移除已完成、右鍵複製網址，以及每本書折疊式進度。
@@ -28,6 +28,8 @@ python novel_dl.py <網址> --start 100 --end 200
 
 - `--out 路徑`：輸出資料夾
 - `--delay 秒`：章節間延遲
+- `--chapter-workers N`：單本小說同時下載章節數（預設 3，最高 8）
+- `--timeout 秒`：單次連線等待上限
 - `--start N` / `--end N`：下載章節範圍
 - `--limit N`：只下載前 N 章
 - `--title 書名`：覆寫書名
@@ -44,7 +46,7 @@ python novel_dl.py <網址> --start 100 --end 200
 - novel543.com
 - 8book.com
 
-其他網站會使用通用 adapter 嘗試解析。若通用模式失敗，可用 GUI 的「Adapter 工具...」產生或匯入自訂 adapter。
+其他網站會使用通用 adapter 嘗試解析。外部 `.py` adapter 能執行任意程式碼，因此匯入或下載後預設停用；檢查內容後才手動啟用。
 
 ## 快取與設定
 
@@ -60,7 +62,7 @@ python novel_dl.py <網址> --start 100 --end 200
 ## 開發
 
 ```powershell
-pip install curl_cffi beautifulsoup4 lxml PyQt6 pytest
+python -m pip install -r requirements-dev.txt
 python -m pytest
 ```
 

@@ -147,3 +147,8 @@ def toggle_adapter_enabled(path: str | Path) -> bool:
 def adapter_is_enabled(path: str | Path) -> bool:
     path = Path(path)
     return not path.with_suffix(path.suffix + ".disabled").exists()
+
+
+def disable_adapter(path: str | Path):
+    path = Path(path)
+    path.with_suffix(path.suffix + ".disabled").write_text("外部 adapter 預設停用；審查後再啟用。", encoding="utf-8")

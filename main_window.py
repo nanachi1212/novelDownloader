@@ -34,7 +34,7 @@ from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QFont, QDesktopServices
 from PyQt6.QtCore import QUrl
 
-from downloader_task import Cancelled, download_novel, cache_root
+from downloader_task import Cancelled, atomic_write_text, download_novel, cache_root
 from fetcher import Fetcher
 from adapter_tools import (
     install_adapter_file,
@@ -43,12 +43,14 @@ from adapter_tools import (
     write_generated_adapter,
     toggle_adapter_enabled,
     adapter_is_enabled,
+    disable_adapter,
 )
 from textfilter import ensure_rules_file, rules_path
+from state_io import read_json, write_json
 from PyQt6.QtWidgets import QComboBox
 from sites import ADAPTERS, USER_ADAPTER_ERRORS, get_adapter, reload_adapters
 
-APP_VERSION = "1.6.0"
+APP_VERSION = "1.6.1"
 
 STATUS_LABEL = {
     "pending": "⏳ 等待",
@@ -100,6 +102,35 @@ def classify_download_error(error) -> str:
     return text
 
 
+QUEUE_FIELDS = ("id", "url", "title", "start", "end", "status", "site_key")
+
+
+def serialize_queue_jobs(jobs):
+    rows = []
+    for job in jobs:
+        row = {key: job.get(key) for key in QUEUE_FIELDS}
+        if row["status"] in ("running", "removing"):
+            row["status"] = "stopped"
+        rows.append(row)
+    return rows
+
+
+def queue_job_from_row(row):
+    if not isinstance(row, dict) or not row.get("url"):
+        return None
+    status = row.get("status", "pending")
+    if status in ("running", "removing"):
+        status = "stopped"
+    if status not in STATUS_LABEL:
+        status = "pending"
+    return {
+        "url": row["url"], "title": row.get("title", ""),
+        "start": row.get("start"), "end": row.get("end"), "status": status,
+        "site_key": row.get("site_key") or site_key_for_url(row["url"]),
+        "id": row.get("id") or uuid.uuid4().hex,
+    }
+
+
 class QueueTreeWidget(QTreeWidget):
     order_changed = pyqtSignal()
 
@@ -120,7 +151,7 @@ class QueueThread(QThread):
 
     def __init__(self, jobs, output_dir, delay, max_workers=2, max_workers_per_site=6,
                  retries=5, output_format="txt", site_settings=None, filename_format="title",
-                 site_cookies=None):
+                 site_cookies=None, timeout=20, chapter_workers=3):
         super().__init__()
         self.jobs = jobs
         self.output_dir = output_dir
@@ -132,6 +163,8 @@ class QueueThread(QThread):
         self.site_settings = site_settings or {}
         self.filename_format = filename_format
         self.site_cookies = site_cookies or {}
+        self.timeout = timeout
+        self.chapter_workers = chapter_workers
         self._stop_event = threading.Event()
         self._jobs_lock = threading.Lock()
         for job in self.jobs:
@@ -264,6 +297,8 @@ class QueueThread(QThread):
                     retries=self.retries, output_format=self.output_format,
                     filename_format=self.filename_format,
                     request_headers=request_headers,
+                    timeout=self.timeout,
+                    chapter_workers=self.chapter_workers,
                 )
                 job["status"] = "done"
                 self.sig_job_status.emit(row, "done")
@@ -473,6 +508,20 @@ class NovelDownloaderUI(QMainWindow):
         self.retry_input.setToolTip("每個網頁請求失敗時的重試次數")
         self.retry_input.setMinimumWidth(65)
         advanced_layout.addWidget(self.retry_input)
+        advanced_layout.addWidget(QLabel("逾時(秒):"))
+        self.timeout_input = QSpinBox()
+        self.timeout_input.setRange(5, 300)
+        self.timeout_input.setValue(20)
+        self.timeout_input.setToolTip("單次網頁連線等待上限")
+        self.timeout_input.setMinimumWidth(65)
+        advanced_layout.addWidget(self.timeout_input)
+        advanced_layout.addWidget(QLabel("章節並行:"))
+        self.chapter_workers_input = QSpinBox()
+        self.chapter_workers_input.setRange(1, 8)
+        self.chapter_workers_input.setValue(3)
+        self.chapter_workers_input.setToolTip("單本小說同時抓取的章節數；被網站限制時降為 1")
+        self.chapter_workers_input.setMinimumWidth(65)
+        advanced_layout.addWidget(self.chapter_workers_input)
         advanced_layout.addWidget(QLabel("輸出:"))
         self.output_format_input = QComboBox()
         self.output_format_input.addItem("TXT", "txt")
@@ -741,25 +790,22 @@ class NovelDownloaderUI(QMainWindow):
         self.save_queue()
 
     def record_history(self, job):
-        try:
-            history = json.loads(self.history_file.read_text(encoding="utf-8"))
-            if not isinstance(history, list):
-                history = []
-        except (OSError, ValueError):
+        history = read_json(self.history_file, [])
+        if not isinstance(history, list):
             history = []
         if any(item.get("id") == job.get("id") for item in history):
             return
         history.append({"id": job.get("id"), "url": job["url"], "title": job.get("title", ""),
                         "site_key": job.get("site_key", ""), "completed_at": time.strftime("%Y-%m-%d %H:%M:%S")})
         try:
-            self.history_file.write_text(json.dumps(history[-500:], ensure_ascii=False, indent=2), encoding="utf-8")
+            write_json(self.history_file, history[-500:])
         except OSError:
             pass
 
     def show_history(self):
         try:
-            history = json.loads(self.history_file.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+            history = read_json(self.history_file, [])
+        except (OSError, ValueError, TypeError):
             history = []
         dlg = QDialog(self)
         dlg.setWindowTitle("下載歷史")
@@ -960,26 +1006,44 @@ class NovelDownloaderUI(QMainWindow):
             path, _ = QFileDialog.getOpenFileName(self, "選擇 Adapter .py", str(Path.home()), "Python (*.py)")
             if not path:
                 return
+            if QMessageBox.question(
+                self,
+                "執行外部程式碼",
+                "Adapter 是可執行的 Python 程式碼，可能讀取或修改電腦上的資料。\n"
+                "只匯入你信任且已檢查過的檔案。確定繼續嗎？",
+            ) != QMessageBox.StandardButton.Yes:
+                return
             try:
                 target = install_adapter_file(path)
+                disable_adapter(target)
             except Exception as exc:
                 QMessageBox.warning(self, "匯入失敗", str(exc))
                 return
-            refresh_info(f"已匯入: {target}\n請重啟程式後使用新 adapter。")
+            refresh_info(f"已匯入但預設停用: {target}\n請先檢查程式碼，再用下方按鈕啟用。")
 
         def update_remote_adapter():
             remote_url = remote_url_input.text().strip()
             if not remote_url or not remote_url.lower().split("?")[0].endswith(".py"):
                 QMessageBox.warning(self, "網址錯誤", "請貼上 .py adapter 的 raw URL")
                 return
+            if urlparse(remote_url).scheme.lower() != "https":
+                QMessageBox.warning(self, "不安全的網址", "遠端 Adapter 只允許使用 HTTPS 下載")
+                return
+            if QMessageBox.question(
+                self,
+                "執行遠端程式碼",
+                "下載後會立即執行這個 Python Adapter。惡意程式碼可能竊取或刪除資料。\n"
+                "請確認來源可信且你已檢查內容。確定繼續嗎？",
+            ) != QMessageBox.StandardButton.Yes:
+                return
             try:
                 source = Fetcher(encoding="utf-8", delay=0).get(remote_url, retries=2)
                 filename = Path(urlparse(remote_url).path).name
                 target = user_adapter_dir() / filename
                 user_adapter_dir().mkdir(parents=True, exist_ok=True)
-                target.write_text(source, encoding="utf-8")
-                reload_adapter_files()
-                refresh_info(f"已更新遠端 adapter：{target}")
+                atomic_write_text(target, source)
+                disable_adapter(target)
+                refresh_info(f"已下載但預設停用：{target}\n請先檢查程式碼，再用下方按鈕啟用。")
             except Exception as exc:
                 QMessageBox.warning(self, "更新失敗", str(exc))
 
@@ -1065,7 +1129,7 @@ class NovelDownloaderUI(QMainWindow):
     def load_preferences(self):
         """載入 GUI 偏好設定；目前記住上次選擇的儲存位置。"""
         try:
-            data = json.loads(self.preferences_file.read_text(encoding="utf-8"))
+            data = read_json(self.preferences_file, {})
             saved_dir = data.get("output_dir") if isinstance(data, dict) else None
             if saved_dir:
                 self.selected_dir = Path(saved_dir).expanduser()
@@ -1074,10 +1138,7 @@ class NovelDownloaderUI(QMainWindow):
 
     def save_preferences(self):
         try:
-            self.preferences_file.write_text(
-                json.dumps({"output_dir": str(self.selected_dir)}, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
+            write_json(self.preferences_file, {"output_dir": str(self.selected_dir)})
         except OSError as exc:
             self.log.append(f"儲存偏好設定失敗：{exc}")
 
@@ -1098,18 +1159,22 @@ class NovelDownloaderUI(QMainWindow):
         self.concurrent_input.setEnabled(False)
         self.site_concurrent_input.setEnabled(False)
         self.retry_input.setEnabled(False)
+        self.timeout_input.setEnabled(False)
+        self.chapter_workers_input.setEnabled(False)
         self.output_format_input.setEnabled(False)
         self.filename_format_input.setEnabled(False)
         self.progress.setValue(0)
         workers = self.concurrent_input.value()
         site_workers = self.site_concurrent_input.value()
         retries = self.retry_input.value()
+        timeout = self.timeout_input.value()
+        chapter_workers = self.chapter_workers_input.value()
         output_format = self.output_format_input.currentData()
         filename_format = self.filename_format_input.currentData()
         self.log.append(f"—— 開始處理隊列，同時下載 {workers} 本；同網站最多 {site_workers} 本 ——")
         self.thread = QueueThread(self.jobs, self.selected_dir, delay, workers, site_workers,
                                   retries, output_format, self.site_settings, filename_format,
-                                  self.site_cookies)
+                                  self.site_cookies, timeout, chapter_workers)
         self.thread.sig_log.connect(self.log.append)
         self.thread.sig_job_log.connect(self.add_job_log)
         self.thread.sig_progress.connect(self.on_progress)
@@ -1150,6 +1215,8 @@ class NovelDownloaderUI(QMainWindow):
         self.concurrent_input.setEnabled(True)
         self.site_concurrent_input.setEnabled(True)
         self.retry_input.setEnabled(True)
+        self.timeout_input.setEnabled(True)
+        self.chapter_workers_input.setEnabled(True)
         self.output_format_input.setEnabled(True)
         self.filename_format_input.setEnabled(True)
         self.log.append("—— 隊列處理結束 ——")
@@ -1159,13 +1226,7 @@ class NovelDownloaderUI(QMainWindow):
     def save_queue(self):
         """保存可恢復的隊列資料，不寫入執行緒 Event 等執行期物件。"""
         try:
-            data = []
-            for job in self.jobs:
-                row = {key: job.get(key) for key in ("id", "url", "title", "start", "end", "status", "site_key")}
-                if row["status"] == "running":
-                    row["status"] = "stopped"
-                data.append(row)
-            self.queue_file.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+            write_json(self.queue_file, serialize_queue_jobs(self.jobs))
         except OSError:
             pass
 
@@ -1184,13 +1245,7 @@ class NovelDownloaderUI(QMainWindow):
         if not path:
             return
         try:
-            rows = []
-            for job in self.jobs:
-                row = {key: job.get(key) for key in ("id", "url", "title", "start", "end", "status", "site_key")}
-                if row["status"] in ("running", "removing"):
-                    row["status"] = "stopped"
-                rows.append(row)
-            Path(path).write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")
+            write_json(path, serialize_queue_jobs(self.jobs))
             self.log.append(f"隊列已匯出：{path}")
         except OSError as exc:
             QMessageBox.warning(self, "匯出失敗", str(exc))
@@ -1203,26 +1258,15 @@ class NovelDownloaderUI(QMainWindow):
         if not path:
             return
         try:
-            data = json.loads(Path(path).read_text(encoding="utf-8"))
+            data = read_json(path, None)
             if not isinstance(data, list):
                 raise ValueError("JSON 必須是隊列陣列")
             existing = {queue_url_key(job.get("url", "")) for job in self.jobs}
             added = 0
             for row in data:
-                if not isinstance(row, dict) or not row.get("url") or queue_url_key(row["url"]) in existing:
+                job = queue_job_from_row(row)
+                if job is None or queue_url_key(job["url"]) in existing:
                     continue
-                job = {
-                    "url": row["url"], "title": row.get("title", ""),
-                    "start": row.get("start"), "end": row.get("end"),
-                    "status": row.get("status", "pending"),
-                    "site_key": row.get("site_key") or site_key_for_url(row["url"]),
-                    "id": row.get("id") or uuid.uuid4().hex,
-                }
-                if job["status"] in ("running", "removing", "removed"):
-                    job["status"] = "stopped" if job["status"] != "removed" else "removed"
-                if job["status"] not in STATUS_LABEL:
-                    job["status"] = "pending"
-                job.setdefault("id", uuid.uuid4().hex)
                 self.jobs.append(job)
                 self.queue_list.addTopLevelItem(self.make_job_item(job))
                 existing.add(queue_url_key(job["url"]))
@@ -1234,7 +1278,7 @@ class NovelDownloaderUI(QMainWindow):
 
     def load_site_settings(self):
         try:
-            data = json.loads(self.site_settings_file.read_text(encoding="utf-8"))
+            data = read_json(self.site_settings_file, {})
             return data if isinstance(data, dict) else {}
         except (OSError, ValueError):
             return {}
@@ -1348,8 +1392,7 @@ class NovelDownloaderUI(QMainWindow):
                     settings[parts[0]].update({"user_agent": parts[3], "referer": parts[4]})
             self.site_settings = settings
             try:
-                self.site_settings_file.write_text(
-                    json.dumps(settings, ensure_ascii=False, indent=2), encoding="utf-8")
+                write_json(self.site_settings_file, settings)
             except OSError as exc:
                 QMessageBox.warning(dlg, "儲存失敗", str(exc))
                 return
@@ -1363,26 +1406,15 @@ class NovelDownloaderUI(QMainWindow):
     def load_queue(self):
         """啟動時恢復上次未完成的隊列。"""
         try:
-            data = json.loads(self.queue_file.read_text(encoding="utf-8"))
+            data = read_json(self.queue_file, [])
         except (OSError, ValueError):
             return
         if not isinstance(data, list):
             return
         for row in data:
-            if not isinstance(row, dict) or not row.get("url"):
+            job = queue_job_from_row(row)
+            if job is None:
                 continue
-            job = {
-                "url": row["url"], "title": row.get("title", ""),
-                "start": row.get("start"), "end": row.get("end"),
-                "status": row.get("status", "pending"),
-                "site_key": row.get("site_key") or site_key_for_url(row["url"]),
-                "id": row.get("id") or uuid.uuid4().hex,
-            }
-            if job["status"] == "running":
-                job["status"] = "stopped"
-            if job["status"] not in STATUS_LABEL:
-                job["status"] = "pending"
-            job.setdefault("id", uuid.uuid4().hex)
             self.jobs.append(job)
             self.queue_list.addTopLevelItem(self.make_job_item(job))
 

@@ -1,4 +1,4 @@
-from adapter_tools import domains_from_url, generate_adapter_template, safe_module_name
+from adapter_tools import adapter_is_enabled, disable_adapter, domains_from_url, generate_adapter_template, safe_module_name
 
 
 def test_adapter_generator_builds_generic_domain_adapter():
@@ -14,3 +14,10 @@ def test_adapter_generator_sanitizes_module_names_and_domains():
         "foo.example",
         "www.foo.example",
     ]
+
+
+def test_external_adapter_can_be_installed_disabled(tmp_path):
+    path = tmp_path / "external.py"
+    path.write_text("raise RuntimeError('must not run')", encoding="utf-8")
+    disable_adapter(path)
+    assert not adapter_is_enabled(path)

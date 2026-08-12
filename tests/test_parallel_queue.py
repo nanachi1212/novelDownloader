@@ -79,3 +79,11 @@ def test_queue_thread_can_mark_pending_job_for_removal(tmp_path):
     assert queue.request_job_remove(0)
     assert jobs[0]["status"] == "removed"
     assert jobs[0]["remove_requested"] is True
+
+
+def test_queue_serialization_and_restore_share_normalization():
+    rows = main_window.serialize_queue_jobs([
+        {"id": "a", "url": "https://example.com/book", "status": "running"},
+    ])
+    assert rows[0]["status"] == "stopped"
+    assert main_window.queue_job_from_row(rows[0])["status"] == "stopped"

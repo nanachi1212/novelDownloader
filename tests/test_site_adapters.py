@@ -104,10 +104,9 @@ def test_chapter_number_warning_reports_site_numbering_drift():
         type("Chapter", (), {"title": "第2章 另一個二"})(),
         type("Chapter", (), {"title": "第4章 四"})(),
     ]
-    assert chapter_number_warning(chapters) == (
-        "[章號提示] 目錄有 4 個章節連結,標題最大章號為 4,"
-        "偵測到重複章號 1 個,網站章號可能不可靠,仍按唯一章節網址下載。"
-    )
+    warning = chapter_number_warning(chapters)
+    assert "偵測到重複章號 1 個" in warning
+    assert "缺少章號 3" in warning
 
 
 def test_czbooks_current_layout_catalog_and_chapter():

@@ -1,7 +1,11 @@
 from zipfile import ZipFile
+import threading
+import time
 
-from downloader_task import atomic_write_text, fetch_parsed_chapter, safe_filename, unique_chapters, write_epub
+from downloader_task import atomic_write_text, chapter_number_warning, fetch_parsed_chapter, safe_filename, save_progress, unique_chapters, write_epub, write_txt_from_files
 from sites.base import Chapter
+from sites.base import BookInfo
+from fetcher import FetchError
 
 
 def test_write_epub_creates_readable_book(tmp_path):
@@ -13,6 +17,82 @@ def test_write_epub_creates_readable_book(tmp_path):
         assert "OEBPS/content.opf" in book.namelist()
         assert "OEBPS/nav.xhtml" in book.namelist()
         assert "第一章" in book.read("OEBPS/chapter1.xhtml").decode("utf-8")
+
+
+def test_streaming_outputs_read_chapters_from_cache_files(tmp_path):
+    chapter = tmp_path / "0001.txt"
+    chapter.write_text("原始正文", encoding="utf-8")
+    txt = tmp_path / "book.txt"
+    epub = tmp_path / "book.epub"
+
+    write_txt_from_files(txt, "書名", [("第一章", chapter)], lambda text: text.replace("原始", "清理"))
+    write_epub(epub, "書名", "作者", "https://example.com", [("第一章", chapter)],
+               transform=lambda text: text.replace("原始", "清理"))
+
+    assert "清理正文" in txt.read_text(encoding="utf-8")
+    with ZipFile(epub) as book:
+        assert "清理正文" in book.read("OEBPS/chapter1.xhtml").decode("utf-8")
+
+
+def test_incremental_progress_drops_legacy_growing_chapter_list(tmp_path):
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    (cache / "progress.json").write_text('{"completed_chapters":[1,2,3]}', encoding="utf-8")
+    save_progress(cache, completed_count=4, last_completed_chapter=4)
+    progress = (cache / "progress.json").read_text(encoding="utf-8")
+    assert "completed_chapters" not in progress
+
+
+def test_single_book_downloads_chapters_in_parallel_but_writes_catalog_order(monkeypatch, tmp_path):
+    import downloader_task
+
+    active = 0
+    max_active = 0
+    lock = threading.Lock()
+
+    class FakeFetcher:
+        def __init__(self, **_kwargs):
+            pass
+
+        def get(self, url, **_kwargs):
+            nonlocal active, max_active
+            if url == "catalog":
+                return "catalog"
+            with lock:
+                active += 1
+                max_active = max(max_active, active)
+            time.sleep(0.03)
+            with lock:
+                active -= 1
+            return url
+
+        def polite_sleep(self):
+            pass
+
+    class FakeAdapter:
+        encoding = "utf-8"
+        domains = ["example.test"]
+        is_generic = False
+
+        def catalog_url(self, _url): return "catalog"
+        def meta_url(self, _url): return None
+        def parse_catalog(self, _html):
+            return BookInfo("並行測試", "", [Chapter(f"第{i}章", f"chapter-{i}") for i in range(1, 5)])
+        def book_id(self, _url): return "parallel-test"
+        def chapter_source_url(self, _html, _url): return None
+        def next_page_url(self, _html, _url): return None
+        def parse_chapter(self, html, title=""): return f"正文 {html}"
+
+    monkeypatch.setattr(downloader_task, "Fetcher", FakeFetcher)
+    monkeypatch.setattr(downloader_task, "get_adapter", lambda _url: FakeAdapter())
+    monkeypatch.setattr(downloader_task, "cache_root", lambda: tmp_path / "cache")
+    monkeypatch.setattr(downloader_task, "load_rules", lambda _site: [])
+
+    output = downloader_task.download_novel("https://example.test/book", tmp_path, delay=0, chapter_workers=3)
+    text = output.read_text(encoding="utf-8")
+
+    assert max_active >= 2
+    assert text.index("第1章") < text.index("第2章") < text.index("第3章") < text.index("第4章")
 
 
 def test_fetch_parsed_chapter_retries_when_parser_gets_wrong_page():
@@ -43,6 +123,34 @@ def test_fetch_parsed_chapter_retries_when_parser_gets_wrong_page():
     assert fetcher.calls == 2
 
 
+def test_fetch_parsed_chapter_retries_transient_fetch_failure():
+    class FakeFetcher:
+        def __init__(self):
+            self.calls = 0
+
+        def get(self, url, referer=None, retries=1):
+            self.calls += 1
+            if self.calls == 1:
+                raise FetchError("temporary timeout")
+            return "chapter page"
+
+    class FakeAdapter:
+        def chapter_source_url(self, html, url):
+            return None
+
+        def next_page_url(self, html, url):
+            return None
+
+        def parse_chapter(self, html, title=""):
+            return "正文"
+
+    fetcher = FakeFetcher()
+    content = fetch_parsed_chapter(fetcher, FakeAdapter(), Chapter("第1章", "https://example/ch1"), 3)
+
+    assert content == "正文"
+    assert fetcher.calls == 2
+
+
 def test_unique_chapters_keeps_first_url_and_order():
     chapters = [
         Chapter("第一章", "https://example/ch1"),
@@ -63,4 +171,24 @@ def test_atomic_write_replaces_part_file(tmp_path):
 
 def test_safe_filename_handles_windows_reserved_and_trailing_chars():
     assert safe_filename("CON") == "_CON"
+    assert safe_filename("CON.txt") == "_CON.txt"
     assert safe_filename('書名:*?. ') == "書名___"
+
+
+def test_chapter_number_warning_reports_real_gap():
+    chapters = [
+        Chapter("第1章", "https://example/ch1"),
+        Chapter("第3章", "https://example/ch3"),
+    ]
+
+    warning = chapter_number_warning(chapters)
+    assert "缺少章號 2" in warning
+
+
+def test_chapter_number_warning_accepts_contiguous_non_one_start():
+    chapters = [
+        Chapter("第100章", "https://example/ch100"),
+        Chapter("第101章", "https://example/ch101"),
+    ]
+
+    assert chapter_number_warning(chapters) == ""

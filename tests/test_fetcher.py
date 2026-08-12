@@ -14,7 +14,7 @@ class FakeSession:
         self.calls = []
 
     def get(self, url, headers, timeout):
-        self.calls.append((url, dict(headers)))
+        self.calls.append((url, dict(headers), timeout))
         return next(self.responses)
 
 
@@ -50,4 +50,11 @@ def test_fetcher_rejects_self_redirect_without_waiting(monkeypatch):
         assert "指向自身" in str(error)
     else:
         raise AssertionError("self redirect should fail")
+
+
+def test_fetcher_uses_configured_timeout():
+    fetcher = Fetcher(timeout=47)
+    fetcher.session = FakeSession([FakeResponse("ok")])
+    assert fetcher.get("https://example.test") == "ok"
+    assert fetcher.session.calls[0][2] == 47
 

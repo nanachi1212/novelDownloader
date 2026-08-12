@@ -16,6 +16,10 @@ Python；PyQt6；curl_cffi；BeautifulSoup；PyInstaller
 
 ## 啟動／驗證
 
-pip install curl_cffi beautifulsoup4 lxml PyQt6 pytest；python gui_launcher.py 或 novel_dl.py
+`python -m pip install --require-hashes -r requirements-dev.lock`；`python gui_launcher.py` 或 `python novel_dl.py`
+
+修改 `requirements*.txt` 後，以 UTF-8 模式重新產生 lock file：
+
+`$env:PYTHONUTF8='1'; python -m piptools compile --strip-extras --allow-unsafe --generate-hashes -o requirements.lock requirements.txt; python -m piptools compile --strip-extras --allow-unsafe --generate-hashes -o requirements-dev.lock requirements-dev.txt`
 
 若實際版本與 README 不同，以鎖定檔、build 設定與當前錯誤訊息為準。

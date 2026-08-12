@@ -4,12 +4,12 @@
 
 ## 需要準備
 
-Python；PyQt6；curl_cffi；BeautifulSoup；PyInstaller
+Python 3.12；直接套件記錄於 `requirements.txt` 與 `requirements-dev.txt`，可重現安裝使用含傳遞套件與雜湊的 lock file。
 
 ## 安裝
 
 1. 以檔案總管進入專案資料夾。
-2. 依 README 或本文件的開發環境指示安裝依賴。
+2. 執行 `python -m pip install --require-hashes -r requirements-dev.lock`。
 3. 安裝完成後先執行最小啟動測試。
 
 ## 成功判定

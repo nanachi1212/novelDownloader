@@ -4,7 +4,9 @@
 
 ## 啟動方式
 
-pip install curl_cffi beautifulsoup4 lxml PyQt6 pytest；python gui_launcher.py 或 novel_dl.py
+執行 `python -m pip install -r requirements-dev.txt`，再執行 `python gui_launcher.py` 或 `python novel_dl.py <網址>`。
+
+下載太慢時可提高「章節並行」（CLI：`--chapter-workers`）；遇到 HTTP 429 或 Cloudflare 時應降回 1，並提高章節延遲。
 
 ## 日常使用
 
