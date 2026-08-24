@@ -30,7 +30,7 @@ from PyQt6.QtWidgets import (
     QAbstractItemView,
     QSystemTrayIcon,
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QObject, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import QFont, QDesktopServices
 from PyQt6.QtCore import QUrl
 
@@ -46,11 +46,11 @@ from adapter_tools import (
     disable_adapter,
 )
 from textfilter import ensure_rules_file, rules_path
-from state_io import read_json, write_json
+from state_io import LatestJsonWriter, read_json, write_json
 from PyQt6.QtWidgets import QComboBox
 from sites import ADAPTERS, USER_ADAPTER_ERRORS, get_adapter, reload_adapters
 
-APP_VERSION = "1.6.1"
+APP_VERSION = "1.6.5"
 
 STATUS_LABEL = {
     "pending": "⏳ 等待",
@@ -342,6 +342,39 @@ class QueueThread(QThread):
         self.sig_all_done.emit()
 
 
+class ProgressUpdateCoalescer(QObject):
+    """Collapse chapter-update bursts into a bounded number of GUI renders."""
+
+    flushed = pyqtSignal(object)
+
+    def __init__(self, interval_ms=150, parent=None):
+        super().__init__(parent)
+        self._latest = {}
+        self._dirty = False
+        self._timer = QTimer(self)
+        self._timer.setSingleShot(True)
+        self._timer.setInterval(max(1, int(interval_ms)))
+        self._timer.timeout.connect(self.flush_now)
+
+    def submit(self, row, current, total):
+        self._latest[int(row)] = (int(current), int(total))
+        self._dirty = True
+        if not self._timer.isActive():
+            self._timer.start()
+
+    def flush_now(self):
+        if not self._dirty:
+            return
+        self._timer.stop()
+        self._dirty = False
+        self.flushed.emit(dict(self._latest))
+
+    def reset(self):
+        self._timer.stop()
+        self._latest.clear()
+        self._dirty = False
+
+
 class NovelDownloaderUI(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -357,6 +390,9 @@ class NovelDownloaderUI(QMainWindow):
         self.preferences_file = self.queue_file.parent / "preferences.json"
         self.site_settings_file = self.queue_file.parent / "site_settings.json"
         self.history_file = self.queue_file.parent / "history.json"
+        self.queue_writer = LatestJsonWriter()
+        self.progress_updates = ProgressUpdateCoalescer(parent=self)
+        self.progress_updates.flushed.connect(self.render_progress_updates)
         self.load_preferences()
         self.site_settings = self.load_site_settings()
         self.site_cookies = {}
@@ -556,6 +592,7 @@ class NovelDownloaderUI(QMainWindow):
         # --- 進度與日誌 ---
         self.progress = QProgressBar()
         self.progress.setValue(0)
+        self.progress.setFormat("總進度：%v / %m 章")
         self.stats_started = time.monotonic()
         self.chapter_progress = {}
         layout.addWidget(self.progress)
@@ -877,6 +914,7 @@ class NovelDownloaderUI(QMainWindow):
         site_combo = QComboBox()
         site_combo.addItem("全局規則 (所有網站)", None)
         site_combo.addItem("69shuba 專用", "69shuba.com")
+        site_combo.addItem("twkan 專用", "twkan.com")
         site_combo.addItem("sunzhinan 專用", "sunzhinan.com")
         site_combo.addItem("xbanxia 專用", "xbanxia.cc")
         site_combo.addItem("czbooks 專用", "czbooks.net")
@@ -1164,6 +1202,9 @@ class NovelDownloaderUI(QMainWindow):
         self.output_format_input.setEnabled(False)
         self.filename_format_input.setEnabled(False)
         self.progress.setValue(0)
+        self.progress_updates.reset()
+        self.chapter_progress = {}
+        self.stats_started = time.monotonic()
         workers = self.concurrent_input.value()
         site_workers = self.site_concurrent_input.value()
         retries = self.retry_input.value()
@@ -1177,8 +1218,7 @@ class NovelDownloaderUI(QMainWindow):
                                   self.site_cookies, timeout, chapter_workers)
         self.thread.sig_log.connect(self.log.append)
         self.thread.sig_job_log.connect(self.add_job_log)
-        self.thread.sig_progress.connect(self.on_progress)
-        self.thread.sig_stats.connect(self.on_stats)
+        self.thread.sig_progress.connect(self.progress_updates.submit)
         self.thread.sig_job_status.connect(self.refresh_row)
         self.thread.sig_all_done.connect(self.on_all_done)
         self.thread.start()
@@ -1189,16 +1229,17 @@ class NovelDownloaderUI(QMainWindow):
             self.log.append("正在停止所有下載(等各自目前章節抓完)...")
             self.stop_btn.setEnabled(False)
 
-    def on_progress(self, row, current, total):
-        self.progress.setMaximum(max(total, 1))
-        self.progress.setValue(current)
-        self.progress.setFormat(f"隊列 {row + 1}：%v / %m 章")
-
-    def on_stats(self, row, current, total):
-        self.chapter_progress[row] = (current, total)
+    def render_progress_updates(self, updates):
+        self.chapter_progress.update(updates)
         elapsed = max(time.monotonic() - self.stats_started, 0.001)
         completed = sum(current for current, _ in self.chapter_progress.values())
         total_chapters = sum(total for _, total in self.chapter_progress.values())
+        maximum = max(total_chapters, 1)
+        value = min(completed, maximum)
+        if self.progress.maximum() != maximum:
+            self.progress.setRange(0, maximum)
+        if self.progress.value() != value:
+            self.progress.setValue(value)
         rate = completed / elapsed
         remaining = max(total_chapters - completed, 0)
         eta = remaining / rate if rate > 0 else 0
@@ -1206,6 +1247,7 @@ class NovelDownloaderUI(QMainWindow):
             f"速度：{rate:.2f} 章/秒 ｜ 預估剩餘：{eta / 60:.1f} 分鐘")
 
     def on_all_done(self):
+        self.progress_updates.flush_now()
         self.purge_removed()
         self.start_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
@@ -1225,10 +1267,11 @@ class NovelDownloaderUI(QMainWindow):
 
     def save_queue(self):
         """保存可恢復的隊列資料，不寫入執行緒 Event 等執行期物件。"""
-        try:
-            write_json(self.queue_file, serialize_queue_jobs(self.jobs))
-        except OSError:
-            pass
+        self.queue_writer.submit(self.queue_file, serialize_queue_jobs(self.jobs))
+
+    def closeEvent(self, event):
+        self.queue_writer.close(timeout=2)
+        super().closeEvent(event)
 
     def filter_queue(self, text):
         needle = text.strip().lower()

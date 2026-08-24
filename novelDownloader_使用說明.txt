@@ -13,6 +13,7 @@ E:\AI gravity project\novelDownloader.exe    ← 直接雙擊啟動
    - 或直接複製網址後按「貼上」鍵快速導入
    - 例如支援的網址:
      • 69shuba.com: https://www.69shuba.com/book/67964.htm
+     • twkan.com: https://twkan.com/book/80493/index.html
      • sunzhinan.com: https://www.sunzhinan.com/books/127806/
      • xbanxia.cc: https://www.xbanxia.cc/books/381757.html
      • czbooks.net: https://czbooks.net/n/uif2b0
@@ -68,6 +69,7 @@ DOM 結構過濾(優先):
 
 專屬支援(解析最精準):
   - 69shuba.com (69书吧)
+  - twkan.com (台灣小說網；自動抓取完整展開目錄)
   - sunzhinan.com (醋溜儿文学) — 支持多頁章節自動縫接
   - xbanxia.cc (半夏小說)
   - czbooks.net (小說狂人)

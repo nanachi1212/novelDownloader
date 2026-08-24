@@ -39,6 +39,7 @@ python novel_dl.py <網址> --start 100 --end 200
 內建專用 adapter：
 
 - 69shuba.com / 69shuba.tw
+- twkan.com（可自動載入「展開全部」完整目錄）
 - czbooks.net
 - xbanxia.cc
 - sunzhinan.com

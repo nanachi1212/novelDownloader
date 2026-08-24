@@ -18,6 +18,7 @@ class BookInfo:
 class SiteAdapter:
     domains: list = []      # 可處理的網域,例如 ["69shuba.com", "www.69shuba.com"]
     encoding: str = "utf-8"
+    max_chapter_workers: int = 8  # 受 Session／反爬限制的網站可降為 1
 
     def catalog_url(self, url: str) -> str:
         """把使用者貼的網址(簡介頁/目錄頁)正規化成目錄頁網址。"""

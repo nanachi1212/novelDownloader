@@ -43,6 +43,16 @@ def test_incremental_progress_drops_legacy_growing_chapter_list(tmp_path):
     assert "completed_chapters" not in progress
 
 
+def test_progress_save_failure_does_not_abort_download(monkeypatch, tmp_path):
+    import downloader_task
+
+    def blocked_write(*_args, **_kwargs):
+        raise PermissionError(5, "Access is denied")
+
+    monkeypatch.setattr(downloader_task, "write_json", blocked_write)
+    downloader_task.save_progress(tmp_path / "cache", completed_count=1)
+
+
 def test_single_book_downloads_chapters_in_parallel_but_writes_catalog_order(monkeypatch, tmp_path):
     import downloader_task
 
@@ -93,6 +103,112 @@ def test_single_book_downloads_chapters_in_parallel_but_writes_catalog_order(mon
 
     assert max_active >= 2
     assert text.index("第1章") < text.index("第2章") < text.index("第3章") < text.index("第4章")
+
+
+def test_single_worker_reuses_catalog_session_for_protected_chapters(monkeypatch, tmp_path):
+    import downloader_task
+
+    instances = []
+
+    class FakeFetcher:
+        def __init__(self, **_kwargs):
+            self.catalog_seen = False
+            instances.append(self)
+
+        def get(self, url, **_kwargs):
+            if url == "catalog":
+                self.catalog_seen = True
+                return "catalog"
+            if not self.catalog_seen:
+                raise FetchError("HTTP 403: catalog session was lost")
+            return "chapter"
+
+        def polite_sleep(self):
+            pass
+
+    class ProtectedAdapter:
+        encoding = "utf-8"
+        domains = ["protected.test"]
+        is_generic = False
+        max_chapter_workers = 1
+
+        def catalog_url(self, _url): return "catalog"
+        def meta_url(self, _url): return None
+        def parse_catalog(self, _html):
+            return BookInfo("受保護測試", "", [Chapter("第1章", "chapter-1")])
+        def book_id(self, _url): return "protected-test"
+        def chapter_source_url(self, _html, _url): return None
+        def next_page_url(self, _html, _url): return None
+        def parse_chapter(self, _html, title=""): return "正文"
+
+    monkeypatch.setattr(downloader_task, "Fetcher", FakeFetcher)
+    monkeypatch.setattr(downloader_task, "get_adapter", lambda _url: ProtectedAdapter())
+    monkeypatch.setattr(downloader_task, "cache_root", lambda: tmp_path / "cache")
+    monkeypatch.setattr(downloader_task, "load_rules", lambda _site: [])
+
+    output = downloader_task.download_novel(
+        "https://protected.test/book", tmp_path, delay=0, chapter_workers=3, retries=1
+    )
+
+    assert output.exists()
+    assert len(instances) == 1
+
+
+def test_parallel_workers_copy_catalog_session_cookies(monkeypatch, tmp_path):
+    import downloader_task
+
+    instances = []
+
+    class FakeSession:
+        def __init__(self):
+            self.cookies = {}
+
+    class FakeFetcher:
+        def __init__(self, **_kwargs):
+            self.session = FakeSession()
+            instances.append(self)
+
+        def get(self, url, **_kwargs):
+            if url == "catalog":
+                self.session.cookies["clearance"] = "ok"
+                return "catalog"
+            if self.session.cookies.get("clearance") != "ok":
+                raise FetchError("HTTP 403: catalog cookies were lost")
+            return url
+
+        def polite_sleep(self):
+            pass
+
+    class ProtectedAdapter:
+        encoding = "utf-8"
+        domains = ["parallel-protected.test"]
+        is_generic = False
+        max_chapter_workers = 2
+
+        def catalog_url(self, _url): return "catalog"
+        def meta_url(self, _url): return None
+        def parse_catalog(self, _html):
+            return BookInfo("並行受保護測試", "", [
+                Chapter("第1章", "chapter-1"), Chapter("第2章", "chapter-2")
+            ])
+        def book_id(self, _url): return "parallel-protected-test"
+        def chapter_source_url(self, _html, _url): return None
+        def next_page_url(self, _html, _url): return None
+        def parse_chapter(self, html, title=""): return f"正文 {html}"
+
+    monkeypatch.setattr(downloader_task, "Fetcher", FakeFetcher)
+    monkeypatch.setattr(downloader_task, "get_adapter", lambda _url: ProtectedAdapter())
+    monkeypatch.setattr(downloader_task, "cache_root", lambda: tmp_path / "cache")
+    monkeypatch.setattr(downloader_task, "load_rules", lambda _site: [])
+
+    output = downloader_task.download_novel(
+        "https://parallel-protected.test/book", tmp_path, delay=0,
+        chapter_workers=2, retries=1
+    )
+
+    assert output.exists()
+    assert len(instances) >= 2
+    assert all(instance.session.cookies.get("clearance") == "ok" for instance in instances)
 
 
 def test_fetch_parsed_chapter_retries_when_parser_gets_wrong_page():

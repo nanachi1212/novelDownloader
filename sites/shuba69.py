@@ -25,8 +25,14 @@ class Shuba69(SiteAdapter):
         "www.69shuba.tw",
     ]
     encoding = "gbk"
+    # 1.5.6 逐章共用同一 session；69shuba 需要保留這個行為。
+    max_chapter_workers = 1
 
     def catalog_url(self, url: str) -> str:
+        # /book/<id>.htm 是書籍資訊頁，真正的章節目錄在 /book/<id>/。
+        info_page = re.match(r"^(https?://[^/]+/book/\d+)\.htm/?(?:[?#].*)?$", url.strip(), re.I)
+        if info_page:
+            return info_page.group(1) + "/"
         m = re.search(r"/(?:book|indexlist)/(\d+)", url)
         if not m:
             raise ValueError(f"無法從網址解析書籍 id: {url}")
@@ -42,7 +48,8 @@ class Shuba69(SiteAdapter):
     def meta_url(self, url: str):
         m = re.search(r"/(?:book|indexlist)/(\d+)", url)
         if "69shuba.tw" in url:
-            return f"https://69shuba.tw/book/{m.group(1)}.htm"
+            # 新 .tw 站的書籍資訊頁使用尾斜線；舊的 .htm 會直接回 404。
+            return f"https://69shuba.tw/book/{m.group(1)}/"
         base = url.split("/book/")[0]
         return f"{base}/book/{m.group(1)}.htm"
 

@@ -10,6 +10,7 @@ from .shuku52 import Shuku52Adapter
 from .novel543 import Novel543Adapter
 from .generic import GenericAdapter
 from .book8 import Book8Adapter
+from .twkan import TwkanAdapter
 from .base import SiteAdapter
 
 BUILTIN_ADAPTERS = [
@@ -20,6 +21,7 @@ BUILTIN_ADAPTERS = [
     Shuku52Adapter,
     Novel543Adapter,
     Book8Adapter,
+    TwkanAdapter,
 ]
 ADAPTERS = list(BUILTIN_ADAPTERS)
 

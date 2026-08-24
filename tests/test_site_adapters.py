@@ -4,6 +4,7 @@ from sites.czbooks import CzbooksAdapter
 from sites.novel543 import Novel543Adapter
 from sites.shuba69 import Shuba69
 from sites.shuku52 import Shuku52Adapter
+from sites.twkan import TwkanAdapter
 from sites.xbanxia import XbanxiaAdapter
 from downloader_task import chapter_number_warning
 
@@ -196,8 +197,66 @@ def test_shuba69_tw_urls_are_supported():
         "https://69shuba.tw/indexlist/67008/"
     )
     assert adapter.meta_url("https://69shuba.tw/indexlist/67008/") == (
-        "https://69shuba.tw/book/67008.htm"
+        "https://69shuba.tw/book/67008/"
+    )
+    assert adapter.meta_url("https://69shuba.tw/book/345685/") == (
+        "https://69shuba.tw/book/345685/"
     )
     assert adapter.book_id("https://69shuba.tw/indexlist/67008/") == "69shuba-67008"
     assert isinstance(get_adapter("https://69shuba.tw/indexlist/67008/"), Shuba69)
+
+
+def test_shuba69_info_page_is_normalized_to_catalog():
+    adapter = Shuba69()
+    assert adapter.catalog_url("https://www.69shuba.com/book/35215.htm") == (
+        "https://www.69shuba.com/book/35215/"
+    )
+    assert adapter.catalog_url("https://www.69shuba.com/book/35215.htm?from=home") == (
+        "https://www.69shuba.com/book/35215/"
+    )
+    assert adapter.max_chapter_workers == 1
+
+
+def test_twkan_urls_meta_and_full_ajax_catalog():
+    adapter = TwkanAdapter()
+    index_url = "https://twkan.com/book/80493/index.html"
+    assert adapter.catalog_url(index_url) == (
+        "https://twkan.com/ajax_novels/chapterlist/80493.html"
+    )
+    assert adapter.meta_url(index_url) == "https://twkan.com/book/80493.html"
+    assert adapter.book_id(index_url) == "twkan-80493"
+
+    meta = """
+    <div class="booknav2">
+      <h1><a href="/book/80493.html">從送子鯉魚到天庭仙官</a></h1>
+      <p>作者：<a href="/author/錦繡灰.html">錦繡灰</a></p>
+    </div>
+    """
+    assert adapter.parse_meta(meta) == ("從送子鯉魚到天庭仙官", "錦繡灰")
+
+    catalog = """
+    <ul>
+      <li data-num="2"><a href="/txt/80493/48236622">第二章 我有一座控制台</a></li>
+      <li data-num="1"><a href="https://twkan.com/txt/80493/48236621">第一章 我是送子鯉魚</a></li>
+    </ul>
+    """
+    book = adapter.parse_catalog(catalog)
+    assert [chapter.title for chapter in book.chapters] == [
+        "第一章 我是送子鯉魚", "第二章 我有一座控制台"
+    ]
+    assert book.chapters[0].url == "https://twkan.com/txt/80493/48236621"
+    assert isinstance(get_adapter(index_url), TwkanAdapter)
+
+
+def test_twkan_chapter_removes_structural_and_text_ads():
+    adapter = TwkanAdapter()
+    chapter = """
+    <div id="txtcontent0">
+      第一段正文<br><br>
+      【記住本站域名 讀台灣好書上台灣小說網，ᴛᴡᴋᴀɴ.ᴄᴏᴍ超省心】<br><br>
+      <div class="txtad"><script>loadAdv(10, 0)</script></div>
+      第二段正文
+    </div>
+    """
+    assert adapter.parse_chapter(chapter) == "第一段正文\n\n第二段正文"
 

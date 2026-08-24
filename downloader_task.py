@@ -4,6 +4,7 @@ import sys
 import html as html_lib
 import json
 import os
+import logging
 import time
 import zipfile
 import threading
@@ -15,6 +16,8 @@ from sites import get_adapter
 from sites.base import join_pages
 from textfilter import apply_rules, drop_repeated, load_rules
 from state_io import read_json, write_json
+
+logger = logging.getLogger(__name__)
 
 MAX_IN_MEMORY_CONTENT_BYTES = 64 * 1024 * 1024
 
@@ -53,7 +56,12 @@ def save_progress(cache: Path, **values):
     if "completed_count" in values:
         current.pop("completed_chapters", None)
     current.update(values, updated_at=int(time.time()))
-    write_json(path, current)
+    try:
+        write_json(path, current)
+    except OSError as exc:
+        # Progress is auxiliary state.  A transient OneDrive lock must not
+        # turn an otherwise successful chapter download into a failed book.
+        logger.warning("Cannot save download progress %s: %s", path, exc)
 
 
 def unique_chapters(chapters):
@@ -261,6 +269,26 @@ def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
     results = [None] * total  # (章節標題, 快取檔案)，固定索引保證輸出順序
     fetched = 0
     worker_local = threading.local()
+    chapter_limit = getattr(adapter, "max_chapter_workers", 8)
+    workers = max(1, min(int(chapter_workers), int(chapter_limit), 8, total))
+
+    def worker_fetcher():
+        if hasattr(worker_local, "fetcher"):
+            return worker_local.fetcher
+        if workers == 1:
+            # Reuse the catalog session exactly as v1.5.6 did.  Some sites set
+            # anti-bot/session state while serving the catalog and require it
+            # for every chapter request.
+            worker_local.fetcher = fetcher
+            return worker_local.fetcher
+        child = Fetcher(
+            encoding=adapter.encoding, delay=delay, headers=request_headers, timeout=timeout)
+        try:
+            child.session.cookies.update(fetcher.session.cookies)
+        except (AttributeError, TypeError):
+            pass
+        worker_local.fetcher = child
+        return child
 
     def fetch_job(n, idx, ch):
         if cancel_check and cancel_check():
@@ -273,22 +301,19 @@ def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
             except (OSError, UnicodeError):
                 content = ""
         if not content:
-            if not hasattr(worker_local, "fetcher"):
-                worker_local.fetcher = Fetcher(
-                    encoding=adapter.encoding, delay=delay, headers=request_headers, timeout=timeout)
-            content = fetch_parsed_chapter(worker_local.fetcher, adapter, ch, retries)
+            active_fetcher = worker_fetcher()
+            content = fetch_parsed_chapter(active_fetcher, adapter, ch, retries)
             if is_generic and n == 1 and len(content) < 80:
                 raise ValueError(
                     f"[自動偵測] 第一章只解析出 {len(content)} 字,通用模式可能抓錯正文區塊,"
                     "已中止下載;請回報網址讓我寫專屬 adapter")
             atomic_write_text(cache_file, content)
-            worker_local.fetcher.polite_sleep()
+            active_fetcher.polite_sleep()
             downloaded = True
         else:
             downloaded = False
         return n, idx, ch.title, cache_file, downloaded
 
-    workers = max(1, min(int(chapter_workers), 8, total))
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = [pool.submit(fetch_job, n, idx, ch) for n, (idx, ch) in enumerate(jobs, 1)]
         completed = 0

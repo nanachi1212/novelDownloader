@@ -1,4 +1,5 @@
 import os
+import time
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -6,6 +7,16 @@ from PyQt6.QtWidgets import QApplication, QSystemTrayIcon
 
 import main_window
 from state_io import read_json
+
+
+def wait_for_queue(path, expected, timeout=2):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        current = read_json(path, None)
+        if current == expected:
+            return current
+        time.sleep(0.01)
+    return read_json(path, None)
 
 
 def make_window(monkeypatch, tmp_path):
@@ -29,7 +40,16 @@ def test_gui_add_filter_stop_restart_remove_and_persist(monkeypatch, tmp_path):
         assert len(window.jobs) == 1
         assert window.queue_list.topLevelItemCount() == 1
         assert window.jobs[0]["start"] == 2
-        assert read_json(tmp_path / "queue.json", [])[0]["title"] == "測試小說"
+        expected_job = [{
+            "url": "https://example.com/book/1",
+            "title": "測試小說",
+            "start": 2,
+            "end": 8,
+            "status": "pending",
+            "site_key": "example.com",
+            "id": window.jobs[0]["id"],
+        }]
+        assert wait_for_queue(tmp_path / "queue.json", expected_job) == expected_job
 
         window.filter_queue("不存在")
         assert window.queue_list.topLevelItem(0).isHidden()
@@ -43,7 +63,7 @@ def test_gui_add_filter_stop_restart_remove_and_persist(monkeypatch, tmp_path):
         assert window.jobs[0]["status"] == "pending"
         window.remove_btn.click()
         assert window.jobs == []
-        assert read_json(tmp_path / "queue.json", None) == []
+        assert wait_for_queue(tmp_path / "queue.json", []) == []
     finally:
         window.close()
 

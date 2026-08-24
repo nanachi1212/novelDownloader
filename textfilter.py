@@ -5,6 +5,7 @@
 """
 import re
 import sys
+import math
 from collections import Counter
 from pathlib import Path
 
@@ -15,6 +16,13 @@ DEFAULT_RULES_HEADER = """\
 # - # 開頭是註解,空行忽略
 # 儲存後,下一次下載(或重跑同一本書)生效
 """
+
+AUTO_BOILERPLATE_RE = re.compile(
+    r"(?:閱讀全文|阅读全文|關閉|关闭|廣告|广告|本站|本網站|本网站|手機用戶|手机用户|"
+    r"記住本站|记住本站|章節報錯|章节报错|加入書籤|加入书签|推薦票|推荐票|"
+    r"關燈|关灯|護眼|护眼|本章完|^推$|^[小中大]$)",
+    re.I,
+)
 
 
 def rules_dir() -> Path:
@@ -108,10 +116,8 @@ def apply_rules(text: str, rules) -> str:
 def drop_repeated(contents, min_len=1, ratio=0.3, min_hits=3):
     """跨章重複段落 = 網站宣傳/廣告樣板,自動移除。
 
-    同一段文字(≥min_len 字、含中英文字,純符號分隔線不算)出現在多章就視為樣板:
-    極短句(1-2字,如「推」):≥2 章就刪(抓廣告詞)
-    短句(3-8字):≥max(3, 30%) 刪(避免誤刪正常短句)
-    長句:≥max(min_hits, 30%) 刪
+    高可信度 UI／廣告詞出現 ≥2 章就移除；一般文字只有長句在至少 80%
+    章節完全相同時才視為樣板。這可避免把「片刻後。」或小說固定地名誤刪。
     回傳 (清理後 contents, 被移除的段落 list)。章數太少(<5)不啟用。
     """
     n = len(contents)
@@ -130,22 +136,11 @@ def drop_repeated(contents, min_len=1, ratio=0.3, min_hits=3):
     boiler = set()
     for p, c in counter.items():
         plen = len(p)
-        # 極短詞(1-2字,如「推」「讀」):≥2章就刪(廣告詞);
-        # 短句(3-5字,如「閱讀全文」):≥2章就刪;
-        # 中短句(6-8字):≥3 章或 ≥30% 才刪(避免誤刪正常短句);
-        # 長句:≥30% 或 ≥3 章
-        if plen <= 2:
-            if c >= 2:
-                boiler.add(p)
-        elif plen <= 5:
-            if c >= 2:
-                boiler.add(p)
-        elif plen <= 8:
-            if c >= max(3, int(n * ratio)):
-                boiler.add(p)
-        else:
-            if c >= max(min_hits, int(n * ratio)):
-                boiler.add(p)
+        if AUTO_BOILERPLATE_RE.search(p) and c >= 2:
+            boiler.add(p)
+            continue
+        if plen >= 9 and c >= max(4, math.ceil(n * 0.8)):
+            boiler.add(p)
 
     if not boiler:
         return contents, []
