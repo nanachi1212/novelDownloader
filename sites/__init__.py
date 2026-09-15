@@ -11,6 +11,8 @@ from .novel543 import Novel543Adapter
 from .generic import GenericAdapter
 from .book8 import Book8Adapter
 from .twkan import TwkanAdapter
+from .novels_com_tw import NovelsComTwAdapter
+from .zhys import ZhysAdapter
 from .base import SiteAdapter
 
 BUILTIN_ADAPTERS = [
@@ -22,6 +24,8 @@ BUILTIN_ADAPTERS = [
     Novel543Adapter,
     Book8Adapter,
     TwkanAdapter,
+    NovelsComTwAdapter,
+    ZhysAdapter,
 ]
 ADAPTERS = list(BUILTIN_ADAPTERS)
 

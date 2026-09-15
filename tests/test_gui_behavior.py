@@ -1,3 +1,4 @@
+import json
 import os
 import time
 
@@ -78,5 +79,46 @@ def test_gui_restores_running_job_as_stopped(monkeypatch, tmp_path):
         assert len(window.jobs) == 1
         assert window.jobs[0]["status"] == "stopped"
         assert "已停止" in window.queue_list.topLevelItem(0).text(0)
+    finally:
+        window.close()
+
+
+def test_start_queue_automatically_resumes_stopped_job(monkeypatch, tmp_path):
+    (tmp_path / "queue.json").write_text(
+        '[{"url":"https://example.com/book","title":"恢復測試","status":"stopped"}]',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(main_window, "download_novel", lambda *args, **kwargs: None)
+    app, window = make_window(monkeypatch, tmp_path)
+    try:
+        window.start_btn.click()
+        deadline = time.monotonic() + 2
+        while window.thread and window.thread.isRunning() and time.monotonic() < deadline:
+            app.processEvents()
+            time.sleep(0.01)
+        app.processEvents()
+
+        assert window.jobs[0]["status"] == "done"
+        assert "已自動恢復 1 個停止/失敗的任務為等待" in window.log.toPlainText()
+    finally:
+        window.close()
+
+
+def test_adding_existing_stopped_url_resumes_it(monkeypatch, tmp_path):
+    url = "https://example.com/book"
+    (tmp_path / "queue.json").write_text(
+        json.dumps([{"url": url, "title": "恢復測試", "status": "stopped"}],
+                   ensure_ascii=False),
+        encoding="utf-8",
+    )
+    app, window = make_window(monkeypatch, tmp_path)
+    try:
+        window.url_input.setText(url)
+        window.add_btn.click()
+        app.processEvents()
+
+        assert len(window.jobs) == 1
+        assert window.jobs[0]["status"] == "pending"
+        assert "已將停止/失敗的任務恢復為等待" in window.log.toPlainText()
     finally:
         window.close()

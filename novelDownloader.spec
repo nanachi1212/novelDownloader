@@ -1,43 +1,56 @@
 # -*- mode: python ; coding: utf-8 -*-
-block_cipher = None
-this_dir = SPECPATH
+
+import os
+
 
 a = Analysis(
-    [this_dir + '\\gui_launcher.py'],
-    pathex=[this_dir],
+    ['gui_launcher.py'],
+    pathex=[],
     binaries=[],
-    datas=[
-        (this_dir + '\\sites', 'sites'),
-        (this_dir + '\\filter_rules*.txt', '.'),
-    ],
+    datas=[('sites', 'sites')],
     hiddenimports=['curl_cffi', 'browser_cookie3'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludedimports=[],
-    win_no_prefer_redirects=False,
-    win_private_assemblies=False,
-    cipher=block_cipher,
+    excludes=[],
     noarchive=False,
+    optimize=0,
 )
-pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
+
+# Qt6Core uses the unversioned ICU functions provided by Windows.  Some build
+# environments expose Poppler's ICU 78 DLLs on PATH; PyInstaller can collect
+# those by mistake, and they then shadow the compatible Windows ICU DLLs.
+incompatible_icu = {'icuuc.dll', 'icudt78.dll'}
+a.binaries = [
+    entry for entry in a.binaries
+    if os.path.basename(entry[0]).lower() not in incompatible_icu
+]
+pyz = PYZ(a.pure)
+
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.zipfiles,
-    a.datas,
     [],
+    exclude_binaries=True,
     name='novelDownloader',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
-    upx_exclude=[],
-    runtime_tmpdir=None,
     console=False,
     disable_windowed_traceback=False,
+    argv_emulation=False,
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    contents_directory='.',
+)
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.datas,
+    strip=False,
+    upx=True,
+    upx_exclude=[],
+    name='novelDownloader',
 )

@@ -6,6 +6,8 @@ from sites.shuba69 import Shuba69
 from sites.shuku52 import Shuku52Adapter
 from sites.twkan import TwkanAdapter
 from sites.xbanxia import XbanxiaAdapter
+from sites.novels_com_tw import NovelsComTwAdapter
+from sites.zhys import ZhysAdapter
 from downloader_task import chapter_number_warning
 
 
@@ -259,4 +261,81 @@ def test_twkan_chapter_removes_structural_and_text_ads():
     </div>
     """
     assert adapter.parse_chapter(chapter) == "第一段正文\n\n第二段正文"
+
+
+def test_novels_com_tw_urls_catalog_and_registration():
+    adapter = NovelsComTwAdapter()
+    book_id = "no" + "a" * 64
+    book_url = f"https://www.novels.com.tw/novels/{book_id}/"
+    chapter_url = f"{book_url}116028087.html"
+    assert adapter.catalog_url(chapter_url) == book_url
+    assert adapter.book_id(book_url) == f"novels-com-tw-{book_id}"
+
+    catalog = f"""
+    <meta property="og:novel:book_name" content="測試小說">
+    <meta property="og:novel:author" content="作者甲">
+    <div id="catalog"><div class="chapters"><ul>
+      <li><a href="/novels/{book_id}/100.html">第一章</a></li>
+      <li><a href="/novels/{book_id}/200.html">第二章</a></li>
+    </ul></div></div>
+    """
+    book = adapter.parse_catalog(catalog)
+    assert (book.title, book.author) == ("測試小說", "作者甲")
+    assert [chapter.title for chapter in book.chapters] == ["第一章", "第二章"]
+    assert book.chapters[0].url == f"https://www.novels.com.tw/novels/{book_id}/100.html"
+    assert isinstance(get_adapter(book_url), NovelsComTwAdapter)
+
+
+def test_novels_com_tw_decrypts_chapter_and_follows_only_same_chapter_pages():
+    adapter = NovelsComTwAdapter()
+    encrypted = (
+        "HesVRxgAexWqrC1LAUgujngJwQ3qB3VkntWEcgH5BdFMcwSfXOhbysfBLTHlV+"
+        "DmkWP34Wzd9gNg/T95dLdmqA=="
+    )
+    html = f'<div id="chapter-content"><script>window.encryptedContent = "{encrypted}";</script></div>'
+    assert adapter.parse_chapter(html) == "第一段正文\n\n第二段正文"
+
+    first_url = "https://www.novels.com.tw/novels/no" + "a" * 64 + "/100.html"
+    page2 = '<a id="next_url" data-real-href="100_2.html">下一頁</a>'
+    assert adapter.next_page_url(page2, first_url) == first_url.replace("100.html", "100_2.html")
+    next_chapter = '<a id="next_url" href="200.html">下一章</a>'
+    assert adapter.next_page_url(next_chapter, first_url) is None
+
+
+def test_zhys_urls_catalog_chapter_and_registration():
+    adapter = ZhysAdapter()
+    assert adapter.catalog_url("https://twp.zhys.tw/read/224981/50896868.html") == (
+        "https://twp.zhys.tw/book/224981.html"
+    )
+    assert adapter.book_id("https://twp.zhys.tw/book/224981.html") == "zhys-224981"
+
+    catalog = """
+    <h1>測試小說</h1><a href="/author/123">作者乙</a>
+    <section id="full-catalog">
+      <div class="catalog-wrap"><a href="/read/224981/1.html">第一章</a></div>
+      <div class="catalog-wrap"><a href="/read/224981/2.html" title="第二章"></a></div>
+    </section>
+    """
+    book = adapter.parse_catalog(catalog)
+    assert (book.title, book.author) == ("測試小說", "作者乙")
+    assert [chapter.title for chapter in book.chapters] == ["第一章", "第二章"]
+    assert book.chapters[0].url == "https://twp.zhys.tw/read/224981/1.html"
+
+    chapter = """
+    <div id="article-content">
+      <p>第一段正文</p><script>廣告</script><p>第二段正文</p>
+    </div>
+    """
+    assert adapter.parse_chapter(chapter) == "第一段正文\n\n第二段正文"
+    assert isinstance(get_adapter("https://twp.zhys.tw/book/224981.html"), ZhysAdapter)
+
+
+def test_zhys_category_url_is_rejected_as_not_a_single_book():
+    adapter = ZhysAdapter()
+    try:
+        adapter.catalog_url("https://twp.zhys.tw/chuanyuejiakong")
+    except ValueError as exc:
+        assert "分類頁不是單本小說網址" in str(exc)
+    else:
+        raise AssertionError("zhys 分類頁應被拒絕")
 

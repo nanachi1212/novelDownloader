@@ -50,7 +50,7 @@ from state_io import LatestJsonWriter, read_json, write_json
 from PyQt6.QtWidgets import QComboBox
 from sites import ADAPTERS, USER_ADAPTER_ERRORS, get_adapter, reload_adapters
 
-APP_VERSION = "1.6.5"
+APP_VERSION = "1.6.6"
 
 STATUS_LABEL = {
     "pending": "⏳ 等待",
@@ -671,6 +671,16 @@ class NovelDownloaderUI(QMainWindow):
         duplicate = next((job for job in self.jobs
                           if queue_url_key(job.get("url", "")) == url_key), None)
         if duplicate:
+            if duplicate.get("status") in ("failed", "stopped"):
+                row = self.jobs.index(duplicate)
+                duplicate["status"] = "pending"
+                self.refresh_row(row, "pending")
+                item = self.job_item(row)
+                if item:
+                    self.queue_list.setCurrentItem(item)
+                self.log.append("網址已在隊列中；已將停止/失敗的任務恢復為等待。")
+                self.url_input.clear()
+                return
             QMessageBox.warning(
                 self,
                 "網址已在下載隊列",
@@ -1181,6 +1191,21 @@ class NovelDownloaderUI(QMainWindow):
             self.log.append(f"儲存偏好設定失敗：{exc}")
 
     def start_queue(self):
+        if not any(j["status"] == "pending" for j in self.jobs):
+            resumable_rows = [
+                row for row, job in enumerate(self.jobs)
+                if job["status"] in ("failed", "stopped")
+            ]
+            for row in resumable_rows:
+                self.jobs[row]["status"] = "pending"
+                item = self.job_item(row)
+                if item:
+                    item.setText(0, self.job_text(self.jobs[row]))
+            if resumable_rows:
+                self.save_queue()
+                self.log.append(
+                    f"已自動恢復 {len(resumable_rows)} 個停止/失敗的任務為等待。"
+                )
         if not any(j["status"] == "pending" for j in self.jobs):
             QMessageBox.information(self, "隊列是空的", "請先「加入隊列」至少一本書")
             return

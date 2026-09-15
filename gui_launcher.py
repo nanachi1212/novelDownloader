@@ -1,4 +1,5 @@
 """GUI 啟動入口(供 PyInstaller 打包用)。"""
+import os
 import sys
 from pathlib import Path
 
@@ -8,6 +9,14 @@ if getattr(sys, "frozen", False):
 else:
     app_dir = Path(__file__).parent
 sys.path.insert(0, str(app_dir))
+
+# PyInstaller 6 may place native libraries in ``_internal``.  Explicitly
+# register both locations so QtWidgets.pyd can find Qt6Widgets.dll on systems
+# with restrictive DLL search settings.
+if getattr(sys, "frozen", False):
+    for dll_dir in (app_dir, app_dir / "_internal"):
+        if dll_dir.is_dir():
+            os.add_dll_directory(str(dll_dir))
 
 from PyQt6.QtWidgets import QApplication
 from main_window import NovelDownloaderUI
