@@ -11,7 +11,9 @@
 
 ## 本專案注意事項
 
-下載慢可逐步提高章節並行；若出現 403、429 或 Cloudflare，則降低章節並行與同網站並行並增加延遲。保留 cache／queue；網站改版先檢查 adapter。詳細紀錄位於程式旁的 `novelDownloader.log`（最多三份輪替檔）。
+下載慢可逐步提高章節並行；若出現 403、429 或 Cloudflare，則降低章節並行與同網站並行並增加延遲。保留 cache／queue；網站改版先檢查 adapter。詳細紀錄位於使用者資料目錄的 `novelDownloader.log`（最多三份輪替檔）；Windows 預設為 `%LOCALAPPDATA%\novelDownloader`，其他平台見 README。
+
+若啟動時顯示資料初始化／遷移失敗，先關閉舊版與其他執行個體，確認目標資料目錄可寫且空間足夠，再重試。舊資料仍保留在原處。不要改成以系統管理員執行來繼續寫入 EXE 旁，也不要直接刪除 `.migration-v1.json`；其中的完成／衝突紀錄可用來確認資料去了哪裡。
 
 ## 不要先做的事
 

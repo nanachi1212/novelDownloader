@@ -8,6 +8,7 @@ import sys
 import math
 from collections import Counter
 from pathlib import Path
+from app_paths import prepare_app_data
 
 DEFAULT_RULES_HEADER = """\
 # 自訂過濾規則:每行一條,符合的整段會從輸出移除
@@ -27,9 +28,7 @@ AUTO_BOILERPLATE_RE = re.compile(
 
 def rules_dir() -> Path:
     """使用者可編輯的規則檔目錄。"""
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).parent
-    return Path(__file__).parent
+    return prepare_app_data()
 
 
 def bundled_rules_dir() -> Path:
