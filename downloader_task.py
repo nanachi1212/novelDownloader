@@ -11,6 +11,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
+from app_dirs import get_app_data_dir
 from fetcher import FetchError, Fetcher
 from sites import get_adapter
 from sites.base import join_pages
@@ -27,9 +28,7 @@ class Cancelled(Exception):
 
 
 def cache_root() -> Path:
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).parent / "cache"
-    return Path(__file__).parent / "cache"
+    return get_app_data_dir() / "cache"
 
 
 def safe_filename(name: str) -> str:

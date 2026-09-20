@@ -9,6 +9,7 @@ import shutil
 import sys
 from pathlib import Path
 from urllib.parse import urlparse
+from app_dirs import get_app_data_dir
 
 
 def app_root() -> Path:
@@ -18,7 +19,7 @@ def app_root() -> Path:
 
 
 def user_adapter_dir() -> Path:
-    return app_root() / "user_adapters"
+    return get_app_data_dir() / "user_adapters"
 
 
 def safe_module_name(name: str) -> str:

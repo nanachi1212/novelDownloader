@@ -9,6 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from urllib.parse import urlparse, urlunparse
 
+from app_dirs import get_app_data_dir, migrate_legacy_data
 from PyQt6.QtWidgets import (
     QApplication,
     QMainWindow,
@@ -385,11 +386,13 @@ class NovelDownloaderUI(QMainWindow):
         self.thread = None
         self.stats_started = 0.0
         self.chapter_progress = {}
-        self.queue_file = (Path(sys.executable).parent if getattr(sys, "frozen", False)
-                           else Path(__file__).parent) / "queue.json"
-        self.preferences_file = self.queue_file.parent / "preferences.json"
-        self.site_settings_file = self.queue_file.parent / "site_settings.json"
-        self.history_file = self.queue_file.parent / "history.json"
+
+        migrate_legacy_data()
+        app_data_dir = get_app_data_dir()
+        self.queue_file = app_data_dir / "queue.json"
+        self.preferences_file = app_data_dir / "preferences.json"
+        self.site_settings_file = app_data_dir / "site_settings.json"
+        self.history_file = app_data_dir / "history.json"
         self.queue_writer = LatestJsonWriter()
         self.progress_updates = ProgressUpdateCoalescer(parent=self)
         self.progress_updates.flushed.connect(self.render_progress_updates)
