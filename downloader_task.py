@@ -1,6 +1,5 @@
 """下載任務核心:CLI 與 GUI 共用,支援章節範圍、快取斷點續傳、進度回報。"""
 import re
-import sys
 import html as html_lib
 import json
 import os
@@ -16,6 +15,7 @@ from sites import get_adapter
 from sites.base import join_pages
 from textfilter import apply_rules, drop_repeated, load_rules
 from state_io import read_json, write_json
+from app_paths import prepare_app_data
 
 logger = logging.getLogger(__name__)
 
@@ -27,9 +27,7 @@ class Cancelled(Exception):
 
 
 def cache_root() -> Path:
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).parent / "cache"
-    return Path(__file__).parent / "cache"
+    return prepare_app_data() / "cache"
 
 
 def safe_filename(name: str) -> str:

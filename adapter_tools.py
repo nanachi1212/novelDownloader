@@ -9,12 +9,12 @@ import shutil
 import sys
 from pathlib import Path
 from urllib.parse import urlparse
+from app_paths import prepare_app_data
 
 
 def app_root() -> Path:
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).parent
-    return Path(__file__).parent
+    """Compatibility alias for the writable application data root."""
+    return prepare_app_data()
 
 
 def user_adapter_dir() -> Path:

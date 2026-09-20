@@ -35,5 +35,5 @@ def test_frozen_rules_fall_back_to_bundled_defaults(monkeypatch, tmp_path):
 
     assert textfilter.load_rules() == [("str", "內建廣告")]
 
-    (app_dir / "filter_rules.txt").write_text("使用者規則", encoding="utf-8")
+    (textfilter.rules_dir() / "filter_rules.txt").write_text("使用者規則", encoding="utf-8")
     assert textfilter.load_rules() == [("str", "使用者規則")]

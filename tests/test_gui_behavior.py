@@ -22,7 +22,7 @@ def wait_for_queue(path, expected, timeout=2):
 
 def make_window(monkeypatch, tmp_path):
     app = QApplication.instance() or QApplication([])
-    monkeypatch.setattr(main_window, "__file__", str(tmp_path / "main_window.py"))
+    monkeypatch.setenv("NOVELDOWNLOADER_DATA_DIR", str(tmp_path))
     monkeypatch.setattr(QSystemTrayIcon, "isSystemTrayAvailable", lambda: False)
     window = main_window.NovelDownloaderUI()
     return app, window
