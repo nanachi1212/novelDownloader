@@ -13,6 +13,7 @@ from .book8 import Book8Adapter
 from .twkan import TwkanAdapter
 from .novels_com_tw import NovelsComTwAdapter
 from .zhys import ZhysAdapter
+from .sto9 import Sto9Adapter
 from .base import SiteAdapter
 
 BUILTIN_ADAPTERS = [
@@ -26,6 +27,7 @@ BUILTIN_ADAPTERS = [
     TwkanAdapter,
     NovelsComTwAdapter,
     ZhysAdapter,
+    Sto9Adapter,
 ]
 ADAPTERS = list(BUILTIN_ADAPTERS)
 

@@ -1,6 +1,7 @@
 """Cloudflare-bypass 抓取層:curl_cffi session、重試、編碼處理、限速、429 退避。"""
 import random
 import re
+import threading
 import time
 from urllib.parse import urljoin
 
@@ -12,6 +13,29 @@ JS_REDIRECT = re.compile(
     r"window\.location\.href\s*=\s*(['\"])(?P<url>[^'\"]+)\1", re.I
 )
 MAX_JS_REDIRECTS = 5
+MAX_BACKOFF_DELAY = 60.0      # 429 退避上限,避免一次卡住數分鐘
+MAX_RATE_LIMIT_HITS = 6       # 單次請求最多容忍幾次 429
+HUMAN_CHECK = re.compile(r"human verification|g-recaptcha|hcaptcha", re.I)
+
+
+class Throttle:
+    """同一本書的所有章節 worker 共用的退避狀態;一個 worker 被限速,全部一起放慢。"""
+
+    def __init__(self, delay):
+        self.lock = threading.Lock()
+        self.base = delay
+        self.delay = delay
+
+    def back_off(self):
+        with self.lock:
+            self.delay = min(self.delay * 2, MAX_BACKOFF_DELAY)
+            return self.delay
+
+    def relax(self):
+        """成功後緩慢回復,否則整本書會一直卡在最高退避值。"""
+        with self.lock:
+            if self.delay > self.base:
+                self.delay = max(self.base, self.delay * 0.9)
 
 
 class FetchError(RuntimeError):
@@ -19,15 +43,24 @@ class FetchError(RuntimeError):
 
 
 class Fetcher:
-    def __init__(self, encoding="utf-8", delay=2.0, impersonate="chrome131", headers=None, timeout=20):
+    def __init__(self, encoding="utf-8", delay=2.0, impersonate="chrome131", headers=None,
+                 timeout=20, throttle=None):
         # encoding=None 表示依回應自動偵測(HTTP 標頭 → meta charset → utf-8/gbk 試錯)
         self.session = requests.Session(impersonate=impersonate)
         self.encoding = encoding
         self.delay = delay
         self.last_url = None  # 自動當下一次請求的 Referer
-        self.current_delay = delay  # 動態調整(429 時加倍)
+        self.throttle = throttle or Throttle(delay)  # 429 退避狀態,可跨 worker 共用
         self.extra_headers = headers or {}
         self.timeout = max(1, float(timeout))
+
+    @property
+    def current_delay(self):
+        return self.throttle.delay
+
+    @current_delay.setter
+    def current_delay(self, value):
+        self.throttle.delay = value
 
     def get(self, url, referer=None, retries=5):
         headers = {
@@ -44,7 +77,10 @@ class Fetcher:
         headers.update({k: v for k, v in self.extra_headers.items() if v})
 
         last_err = None
-        for attempt in range(1, retries + 1):
+        attempt = 0
+        rate_limit_hits = 0
+        while attempt < retries:
+            attempt += 1
             try:
                 current_url = url
                 for redirect_count in range(MAX_JS_REDIRECTS + 1):
@@ -69,15 +105,26 @@ class Fetcher:
                     break
 
                 if r.status_code == 429:
-                    # 速率限制:加倍延遲後重試
-                    self.current_delay *= 2
-                    last_err = f"HTTP 429 速率限制,退避到 {self.current_delay:.1f}s"
-                    time.sleep(self.current_delay)
+                    # 速率限制:整本書共用的延遲加倍後重試,且不算進一般重試次數
+                    wait = self.throttle.back_off()
+                    rate_limit_hits += 1
+                    attempt -= 1
+                    last_err = f"HTTP 429 速率限制,退避到 {wait:.1f}s"
+                    if rate_limit_hits >= MAX_RATE_LIMIT_HITS:
+                        break
+                    time.sleep(wait)
                     continue
 
                 if r.status_code == 200 and "Just a moment" not in text:
                     self.last_url = current_url
+                    self.throttle.relax()
                     return text
+
+                if r.status_code == 403 and HUMAN_CHECK.search(text):
+                    # reCAPTCHA 這類人機驗證重試無用,直接結束並提示匯入 Cookie
+                    last_err = ("HTTP 403 網站要求人機驗證,請先在瀏覽器完成驗證,"
+                                "再用「網站 Cookie」把該網域的 Cookie 匯入後重試")
+                    break
 
                 if "Just a moment" in text:
                     last_err = f"HTTP {r.status_code}: 被 Cloudflare 挑戰"
