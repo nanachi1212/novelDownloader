@@ -122,3 +122,117 @@ def test_adding_existing_stopped_url_resumes_it(monkeypatch, tmp_path):
         assert "已將停止/失敗的任務恢復為等待" in window.log.toPlainText()
     finally:
         window.close()
+
+
+def test_job_logs_are_separated_per_queue(monkeypatch, tmp_path):
+    app, window = make_window(monkeypatch, tmp_path)
+    try:
+        for url, title in (("https://example.com/book/1", "甲書"),
+                           ("https://example.com/book/2", "乙書")):
+            window.url_input.setText(url)
+            window.title_input.setText(title)
+            window.add_btn.click()
+        app.processEvents()
+        window.add_job_log(0, "[1/10] 第一章")
+        window.add_job_log(1, "[1/20] 第一章")
+        window.add_job_log(0, "[2/10] 第二章")
+        app.processEvents()
+
+        assert window.log_tabs.count() == 3
+        assert window.log_tabs.tabText(1) == "隊列 1｜甲書"
+        assert window.log_tabs.tabText(2) == "隊列 2｜乙書"
+        first = window.log_tabs.widget(1).toPlainText()
+        second = window.log_tabs.widget(2).toPlainText()
+        assert "[1/10] 第一章" in first and "[2/10] 第二章" in first
+        assert "[1/20]" not in first
+        assert second.strip() == "[1/20] 第一章"
+        assert "第一章" not in window.log.toPlainText()
+
+        window.clear_job_logs()
+        app.processEvents()
+        assert window.log_tabs.count() == 1
+    finally:
+        window.close()
+
+
+def test_job_log_tabs_track_title_and_removal(monkeypatch, tmp_path):
+    app, window = make_window(monkeypatch, tmp_path)
+    try:
+        for url in ("https://example.com/book/1", "https://example.com/book/2"):
+            window.url_input.setText(url)
+            window.add_btn.click()
+        app.processEvents()
+        window.add_job_log(0, "《異度旅社》作者: 疊瞳,全書 894 章")
+        window.add_job_log(1, "正在抓取目錄...")
+        app.processEvents()
+        assert window.log_tabs.tabText(1) == "隊列 1｜異度旅社"
+        assert window.log_tabs.tabText(2) == "隊列 2"
+
+        window.queue_list.setCurrentItem(window.queue_list.topLevelItem(0))
+        window.remove_selected()
+        app.processEvents()
+        assert window.log_tabs.count() == 2
+        assert window.log_tabs.tabText(1) == "隊列 1"  # 原隊列 2 重新編號
+    finally:
+        window.close()
+
+
+class FakeCookie:
+    def __init__(self, name, value):
+        self.name = name
+        self.value = value
+
+
+def test_browser_cookie_import_falls_back_to_next_browser():
+    """Chrome 需要管理員權限時，改用下一個瀏覽器，而不是整個失敗。"""
+
+    class FakeModule:
+        @staticmethod
+        def chrome(domain_name):
+            raise RuntimeError("This operation requires admin. Please run as admin.")
+
+        @staticmethod
+        def edge(domain_name):
+            return []
+
+        @staticmethod
+        def firefox(domain_name):
+            return [FakeCookie("cf_clearance", "abc"), FakeCookie("sid", "1")]
+
+    label, header, problems = main_window.read_browser_cookies("69shuba.tw", FakeModule)
+    assert label == "Firefox"
+    assert header == "cf_clearance=abc; sid=1"
+    assert problems[0] == "Chrome：新版 Chrome/Edge 的 Cookie 加密需要系統管理員權限"
+    assert problems[1] == "Edge：沒有此網域的 Cookie"
+
+
+def test_browser_cookie_import_reports_every_reason_when_all_fail():
+    class FakeModule:
+        @staticmethod
+        def chrome(domain_name):
+            raise RuntimeError("This operation requires admin. Please run as admin.")
+
+        @staticmethod
+        def firefox(domain_name):
+            raise RuntimeError("Could not find Firefox profile directory")
+
+    label, header, problems = main_window.read_browser_cookies("69shuba.tw", FakeModule)
+    assert (label, header) == ("", "")
+    assert problems == [
+        "Chrome：新版 Chrome/Edge 的 Cookie 加密需要系統管理員權限",
+        "Firefox：沒有安裝或找不到設定檔",
+    ]
+
+
+def test_cookie_header_only_keeps_matching_domain():
+    from chrome_cookies import cookies_to_header
+
+    cookies = [
+        {"domain": ".69shuba.tw", "name": "cf_clearance", "value": "abc"},
+        {"domain": "69shuba.tw", "name": "sid", "value": "1"},
+        {"domain": ".other.com", "name": "ad", "value": "x"},
+    ]
+    assert cookies_to_header(cookies, "69shuba.tw") == "cf_clearance=abc; sid=1"
+    assert cookies_to_header(cookies, "www.69shuba.tw") == "cf_clearance=abc; sid=1"
+    assert cookies_to_header(cookies, "other.com") == "ad=x"
+    assert cookies_to_header(cookies, "example.test") == ""

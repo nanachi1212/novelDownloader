@@ -62,7 +62,7 @@ def test_single_book_downloads_chapters_in_parallel_but_writes_catalog_order(mon
 
     class FakeFetcher:
         def __init__(self, **_kwargs):
-            pass
+            self.throttle = None
 
         def get(self, url, **_kwargs):
             nonlocal active, max_active
@@ -112,6 +112,7 @@ def test_single_worker_reuses_catalog_session_for_protected_chapters(monkeypatch
 
     class FakeFetcher:
         def __init__(self, **_kwargs):
+            self.throttle = None
             self.catalog_seen = False
             instances.append(self)
 
@@ -165,6 +166,7 @@ def test_parallel_workers_copy_catalog_session_cookies(monkeypatch, tmp_path):
 
     class FakeFetcher:
         def __init__(self, **_kwargs):
+            self.throttle = None
             self.session = FakeSession()
             instances.append(self)
 
@@ -308,3 +310,102 @@ def test_chapter_number_warning_accepts_contiguous_non_one_start():
     ]
 
     assert chapter_number_warning(chapters) == ""
+
+
+def _tolerance_setup(monkeypatch, tmp_path, failing_urls, chapters=6, fail_times=None):
+    """建立一本 `chapters` 章的假書；failing_urls 的章節會丟 FetchError。
+
+    fail_times=None 表示永遠失敗；給數字則只失敗前 N 次（模擬網站暫時性 404）。
+    """
+    import downloader_task
+
+    attempts = {}
+
+    class FakeFetcher:
+        def __init__(self, **_kwargs):
+            self.throttle = None
+
+        def get(self, url, **_kwargs):
+            if url == "catalog":
+                return "catalog"
+            if url in failing_urls:
+                attempts[url] = attempts.get(url, 0) + 1
+                if fail_times is None or attempts[url] <= fail_times:
+                    raise FetchError(f"抓取失敗 {url}: HTTP 404")
+            return url
+
+        def polite_sleep(self):
+            pass
+
+    class FakeAdapter:
+        encoding = "utf-8"
+        domains = ["example.test"]
+        is_generic = False
+
+        def catalog_url(self, _url): return "catalog"
+        def meta_url(self, _url): return None
+        def parse_catalog(self, _html):
+            return BookInfo("容錯測試", "", [
+                Chapter(f"第{i}章", f"chapter-{i}") for i in range(1, chapters + 1)])
+        def book_id(self, _url): return "tolerance-test"
+        def chapter_source_url(self, _html, _url): return None
+        def next_page_url(self, _html, _url): return None
+        def parse_chapter(self, html, title=""): return f"正文 {html}"
+
+    monkeypatch.setattr(downloader_task, "Fetcher", FakeFetcher)
+    monkeypatch.setattr(downloader_task, "get_adapter", lambda _url: FakeAdapter())
+    monkeypatch.setattr(downloader_task, "cache_root", lambda: tmp_path / "cache")
+    monkeypatch.setattr(downloader_task, "load_rules", lambda _site: [])
+    monkeypatch.setattr(downloader_task, "RETRY_COOLDOWN", 0)
+    monkeypatch.setattr(downloader_task.time, "sleep", lambda _seconds: None)
+    return downloader_task
+
+
+def test_a_few_failed_chapters_do_not_kill_the_whole_book(monkeypatch, tmp_path):
+    messages = []
+    downloader_task = _tolerance_setup(monkeypatch, tmp_path, {"chapter-3"})
+
+    output = downloader_task.download_novel(
+        "https://example.test/book", tmp_path, delay=0, chapter_workers=2,
+        callback=lambda stage, current, total, msg: messages.append(msg))
+    text = output.read_text(encoding="utf-8")
+
+    assert "第2章" in text and "第4章" in text
+    assert "正文 chapter-3" not in text          # 失敗章節不會寫進輸出
+    assert any("第3章" in m and "抓取失敗" in m for m in messages)
+    assert any(m.startswith("[重試] 1 章第一輪失敗") for m in messages)
+    assert any(m.startswith("[略過] 1 章抓取失敗") for m in messages)
+    assert not (tmp_path / "cache" / "tolerance-test" / "0003.txt").exists()  # 不留壞快取
+
+
+def test_too_many_failed_chapters_still_abort(monkeypatch, tmp_path):
+    downloader_task = _tolerance_setup(
+        monkeypatch, tmp_path, {"chapter-2", "chapter-3", "chapter-4", "chapter-5"})
+
+    try:
+        downloader_task.download_novel(
+            "https://example.test/book", tmp_path, delay=0, chapter_workers=2)
+    except FetchError as error:
+        assert "重試後仍有" in str(error) and "中止下載" in str(error)
+    else:
+        raise AssertionError("too many failures should abort")
+
+
+def test_temporary_404_recovers_on_the_slow_retry_pass(monkeypatch, tmp_path):
+    """網站忙碌時整批回 404：第一輪失敗的章節在冷卻後單執行緒重抓回來。"""
+    messages = []
+    downloader_task = _tolerance_setup(
+        monkeypatch, tmp_path, {"chapter-2", "chapter-3", "chapter-4", "chapter-5"},
+        fail_times=5)  # 第一輪的 5 次內部重試全失敗，冷卻後的重試輪才成功
+
+    output = downloader_task.download_novel(
+        "https://example.test/book", tmp_path, delay=0, chapter_workers=3,
+        callback=lambda stage, current, total, msg: messages.append(msg))
+    text = output.read_text(encoding="utf-8")
+
+    for n in range(1, 7):
+        assert f"正文 chapter-{n}" in text          # 六章全部都在,順序照目錄
+    assert text.index("第2章") < text.index("第3章") < text.index("第4章")
+    assert any(m.startswith("[重試] 4 章第一輪失敗") for m in messages)
+    assert sum(m.startswith("[重試成功]") for m in messages) == 4
+    assert not any(m.startswith("[略過]") for m in messages)

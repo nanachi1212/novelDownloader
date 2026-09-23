@@ -3,4 +3,5 @@ beautifulsoup4==4.15.0
 lxml==6.1.1
 curl_cffi==0.16.0
 browser-cookie3==0.20.1
+websockets==16.0
 cryptography==50.0.1

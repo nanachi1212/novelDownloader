@@ -14,3 +14,7 @@ queue.json
 site_settings.json
 novelDownloader.log*
 user_adapters/
+
+# Release artifacts
+novelDownloader-v*/
+novelDownloader-v*.zip

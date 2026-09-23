@@ -20,6 +20,9 @@ from app_paths import prepare_app_data
 logger = logging.getLogger(__name__)
 
 MAX_IN_MEMORY_CONTENT_BYTES = 64 * 1024 * 1024
+CHAPTER_RETRY_MAX_WAIT = 8      # 單章重試之間的退避上限(秒)
+RETRY_COOLDOWN = 20             # 第一輪失敗後的冷卻秒數,等網站的暫時性限速解除
+ABORT_AFTER_CONSECUTIVE = 20    # 開頭連續這麼多章全失敗就直接中止
 
 
 class Cancelled(Exception):
@@ -118,9 +121,16 @@ def chapter_number_warning(chapters) -> str:
     return ",".join(parts)
 
 
-def fetch_parsed_chapter(fetcher, adapter, chapter, retries: int) -> str:
+def fetch_parsed_chapter(fetcher, adapter, chapter, retries: int, on_retry=None) -> str:
     last_err = None
-    for _ in range(max(retries, 1)):
+    attempts = max(retries, 1)
+    for attempt in range(attempts):
+        if attempt:
+            # 網站限速時常回 404/403,緊接著重打只會被擋更久,改成指數退避
+            wait = min(2 ** attempt, CHAPTER_RETRY_MAX_WAIT)
+            if on_retry:
+                on_retry(attempt + 1, attempts, wait, last_err)
+            time.sleep(wait)
         try:
             html = fetcher.get(chapter.url, retries=1)
             source_url = adapter.chapter_source_url(html, chapter.url)
@@ -280,7 +290,8 @@ def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
             worker_local.fetcher = fetcher
             return worker_local.fetcher
         child = Fetcher(
-            encoding=adapter.encoding, delay=delay, headers=request_headers, timeout=timeout)
+            encoding=adapter.encoding, delay=delay, headers=request_headers, timeout=timeout,
+            throttle=fetcher.throttle)  # 共用退避狀態:一個 worker 被 429,全部一起放慢
         try:
             child.session.cookies.update(fetcher.session.cookies)
         except (AttributeError, TypeError):
@@ -300,7 +311,16 @@ def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
                 content = ""
         if not content:
             active_fetcher = worker_fetcher()
-            content = fetch_parsed_chapter(active_fetcher, adapter, ch, retries)
+            def on_retry(attempt, attempts, wait, error):
+                callback("retry", 0, 1,
+                         f"[重試] 第{idx}章 {ch.title[:16]} 第 {attempt}/{attempts} 次,"
+                         f"等 {wait} 秒（{str(error)[-40:]}）")
+
+            try:
+                content = fetch_parsed_chapter(active_fetcher, adapter, ch, retries, on_retry)
+            except FetchError as exc:
+                # 單章暫時性失敗(網站偶發 404/逾時)不寫快取,交由呼叫端決定是否中止整本
+                return n, idx, ch.title, None, False, str(exc)
             if is_generic and n == 1 and len(content) < 80:
                 raise ValueError(
                     f"[自動偵測] 第一章只解析出 {len(content)} 字,通用模式可能抓錯正文區塊,"
@@ -310,17 +330,30 @@ def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
             downloaded = True
         else:
             downloaded = False
-        return n, idx, ch.title, cache_file, downloaded
+        return n, idx, ch.title, cache_file, downloaded, ""
 
+    # 網站忙碌時常整批回 404/限速,第一輪失敗不代表章節不存在:先跑完,再放慢重試一輪。
+    max_failures = max(3, total // 100)
+    failures = []          # [(n, idx, 章節)]
+    last_error = ""
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = [pool.submit(fetch_job, n, idx, ch) for n, (idx, ch) in enumerate(jobs, 1)]
         completed = 0
         try:
             for future in as_completed(futures):
-                n, idx, title, cache_file, downloaded = future.result()
+                n, idx, title, cache_file, downloaded, error = future.result()
+                completed += 1
+                if error:
+                    failures.append((n, idx, jobs[n - 1][1]))
+                    last_error = error
+                    if len(failures) >= ABORT_AFTER_CONSECUTIVE and len(failures) == completed:
+                        # 從頭到尾每一章都失敗:網站整個擋住,再抓下去只是浪費時間
+                        raise FetchError(f"連續 {completed} 章都抓取失敗,中止下載。最後錯誤:{error}")
+                    callback("chapter", completed, total,
+                             f"[{completed}/{total}] ✗ 第{idx}章 {title[:20]} 抓取失敗,稍後重試")
+                    continue
                 results[n - 1] = (title, cache_file)
                 fetched += int(downloaded)
-                completed += 1
                 save_progress(cache, completed_count=completed, last_completed_chapter=idx, status="downloading")
                 callback("chapter", completed, total, f"[{completed}/{total}] {title[:30]}")
         except Exception as exc:
@@ -328,6 +361,38 @@ def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
                 future.cancel()
             save_progress(cache, status="error", last_error=str(exc))
             raise
+
+    if failures:
+        callback("chapter", completed, total,
+                 f"[重試] {len(failures)} 章第一輪失敗,等 {RETRY_COOLDOWN} 秒後單執行緒重抓")
+        time.sleep(RETRY_COOLDOWN)  # 給網站的暫時性限速一點時間解除
+        remaining = []
+        for n, idx, ch in failures:
+            if cancel_check and cancel_check():
+                raise Cancelled("使用者中止,已下載的章節保留在快取,重跑會續傳")
+            cache_file = cache / f"{idx:04d}.txt"
+            try:
+                content = fetch_parsed_chapter(fetcher, adapter, ch, retries)
+            except FetchError as exc:
+                last_error = str(exc)
+                remaining.append((idx, ch.title))
+                continue
+            atomic_write_text(cache_file, content)
+            fetcher.polite_sleep()
+            results[n - 1] = (ch.title, cache_file)
+            fetched += 1
+            callback("chapter", completed, total, f"[重試成功] 第{idx}章 {ch.title[:20]}")
+        failures = remaining
+        if len(failures) > max_failures:
+            save_progress(cache, status="error", last_error=last_error)
+            raise FetchError(
+                f"重試後仍有 {len(failures)} 章失敗(上限 {max_failures}),中止下載;"
+                f"稍後重跑會從快取續傳。最後錯誤:{last_error}")
+    if failures:
+        preview = "、".join(f"第{idx}章" for idx, _ in failures[:5])
+        callback("chapter", completed, total,
+                 f"[略過] {len(failures)} 章抓取失敗({preview}),輸出不含這些章節;重跑會補抓")
+    results = [item for item in results if item]
 
     # 合併前後處理(只動輸出,不動快取):自訂規則 → 跨章重複樣板自動偵測
     # 提取網站識別符(優先用專用規則,找不到用全局)
@@ -364,5 +429,7 @@ def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
         else:
             atomic_write_text(out, header + "\n\n" + "\n\n\n".join(texts) + "\n")
     save_progress(cache, completed_chapters=[idx for idx, _ in jobs], status="done", output=str(out))
-    callback("done", total, total, f"完成!新抓 {fetched} 章、快取 {total - fetched} 章\n輸出: {out}")
+    skipped_note = f"、失敗略過 {len(failures)} 章" if failures else ""
+    callback("done", total, total,
+             f"完成!新抓 {fetched} 章、快取 {len(results) - fetched} 章{skipped_note}\n輸出: {out}")
     return out
