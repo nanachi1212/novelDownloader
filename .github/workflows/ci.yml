@@ -7,11 +7,10 @@ on:
 
 jobs:
   test:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [windows-latest, ubuntu-latest]
-    runs-on: ${{ matrix.os }}
+    # requirements-dev.lock is a Windows-only hash lock (pins pywin32), matching
+    # this project's documented primary platform; it does not install on Linux,
+    # so this job only runs on windows-latest rather than forking the lock file.
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
 
