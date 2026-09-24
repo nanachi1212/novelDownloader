@@ -415,6 +415,10 @@ class FanqieAdapter(SiteAdapter):
             paragraphs.pop(0)
         body = "\n\n".join(paragraphs)
         expected_words = chapter_data.get("chapterWordNumber")
+        if isinstance(expected_words, str) and re.fullmatch(r"[0-9]+", expected_words):
+            expected_words = int(expected_words)
+        elif expected_words is not None and type(expected_words) is not int:
+            raise FanqieError("番茄 reader 章節字數格式無法確認，未保存正文。")
         if (type(expected_words) is int and expected_words > 0
                 and len(body.replace("\n", "")) < expected_words * 0.7):
             raise FanqieError("番茄 reader 正文短於章節字數，可能是截斷內容；未保存。")

@@ -746,6 +746,30 @@ def test_unresolved_stylesheet_conditions_fail_closed(tmp_path, element):
         import_reader_html(page, "999", "101", "第一章", tmp_path / "preview")
 
 
+def test_disabled_stylesheet_does_not_override_reader_font(tmp_path):
+    page = _saved_reader(tmp_path)
+    assets = tmp_path / "chapter_files"
+    (assets / "disabled.css").write_text("#reader-content {display:none}", encoding="utf-8")
+    page.write_text(page.read_text(encoding="utf-8").replace(
+        "</head>", '<link rel="stylesheet" disabled href="chapter_files/disabled.css"></head>'),
+        encoding="utf-8")
+    preview = import_reader_html(page, "999", "101", "第一章", tmp_path / "preview")
+    assert preview.paragraph_count == 2
+
+
+def test_font_face_uses_last_src_declaration(tmp_path):
+    page = _saved_reader(tmp_path)
+    assets = tmp_path / "chapter_files"
+    old_font = b"wOF2" + b"obsolete-synthetic-font"
+    (assets / "old.woff2").write_bytes(old_font)
+    css = assets / "reader.css"
+    css.write_text(css.read_text(encoding="utf-8").replace(
+        "src: url('font.woff2')", "src: url('old.woff2'); src: url('font.woff2')"),
+        encoding="utf-8")
+    preview = import_reader_html(page, "999", "101", "第一章", tmp_path / "preview")
+    assert preview.font_sha256 == hashlib.sha256(FONT_BYTES).hexdigest()
+
+
 def test_unrelated_input_visibility_selector_does_not_block_import(tmp_path):
     page = _saved_reader(tmp_path)
     css = tmp_path / "chapter_files" / "reader.css"

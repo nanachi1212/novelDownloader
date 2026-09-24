@@ -142,6 +142,10 @@ def test_shortened_reader_body_is_rejected():
     html = _reader().replace('"content":', '"chapterWordNumber": 2000, "content":')
     with pytest.raises(FanqieError, match="截斷"):
         adapter.parse_chapter(html)
+    with pytest.raises(FanqieError, match="截斷"):
+        adapter.parse_chapter(html.replace('"chapterWordNumber": 2000', '"chapterWordNumber": "2000"'))
+    with pytest.raises(FanqieError, match="字數格式"):
+        adapter.parse_chapter(html.replace('"chapterWordNumber": 2000', '"chapterWordNumber": "unknown"'))
 
 
 @pytest.mark.parametrize("status", ["paid", "vip", "unknown-state", 0])

@@ -158,6 +158,8 @@ def _extract_css(soup: BeautifulSoup, html_path: Path) -> list[str]:
     for node in soup.find_all(["style", "link"]):
         if node.name == "link" and "stylesheet" not in (node.get("rel") or []):
             continue
+        if node.name == "link" and node.has_attr("disabled"):
+            continue
         media = (node.get("media") or "").strip().lower()
         if media and media not in {"screen", "all"}:
             raise ReaderImportError("保存頁面含有無法確認的 CSS media 條件。")
@@ -604,6 +606,34 @@ def _face_matches(face: str, weight: int, style: str) -> bool:
     return weight_matches and _font_style(style_value) == style
 
 
+def _effective_font_src(face: str) -> str:
+    declarations = []
+    start = depth = 0
+    quote = ""
+    escaped = False
+    for index, char in enumerate(face):
+        if escaped:
+            escaped = False
+        elif char == "\\" and quote:
+            escaped = True
+        elif quote:
+            if char == quote:
+                quote = ""
+        elif char in "\"'":
+            quote = char
+        elif char == "(":
+            depth += 1
+        elif char == ")" and depth:
+            depth -= 1
+        elif char == ";" and not depth:
+            declarations.append(face[start:index])
+            start = index + 1
+    declarations.append(face[start:])
+    sources = [match.group(1).strip() for declaration in declarations
+               if (match := re.fullmatch(r"\s*src\s*:\s*(.*)", declaration, re.I | re.S))]
+    return sources[-1] if sources else ""
+
+
 def _font_resource(css_blocks: list[str], family: str, weight: int, style: str,
                    html_path: Path) -> tuple[bytes, str]:
     root = html_path.parent
@@ -618,7 +648,7 @@ def _font_resource(css_blocks: list[str], family: str, weight: int, style: str,
            for face in matching_faces):
         raise ReaderImportError("正文字型使用 unicode-range 分割字型，無法安全建立單一字型預覽。")
     for face in matching_faces:
-        for src in URL_RE.finditer(face):
+        for src in URL_RE.finditer(_effective_font_src(face)):
             uri = src.group(2).strip()
             if uri.lower().startswith("data:"):
                 header, separator, payload = uri.partition(",")
