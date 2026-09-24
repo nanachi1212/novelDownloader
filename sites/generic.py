@@ -72,7 +72,15 @@ EXPAND_LINK_TEXT_DEFAULT = re.compile(
     r"更多章節|更多章节|全部章節|全部章节|載入全部|加载全部"
 )
 EXPAND_LINK_EXCLUDE = re.compile(r"登入|登錄|login|VIP|會員|会员", re.I)
-NEXT_CATALOG_PAGE_TEXT = re.compile(r"^(下一?[页頁]|更多|載入更多|加载更多)")
+# 「下一頁」語意明確,整份文件搜尋也安全,前綴比對可以吃「下一頁 »」這種文字。
+NEXT_CATALOG_PAGE_TEXT = re.compile(r"^下一?[页頁]")
+# 「更多」這種泛用詞整頁搜尋容易誤中「更多推薦」之類的不相干連結,只有在
+# 明確的分頁標記元素(class/id 帶 page/pagination)內才信任、且要求全字比對。
+LOOSE_MORE_PAGE_TEXT = re.compile(r"^(更多|載入更多|加载更多)$")
+# 目錄容器裡常見的翻頁/導覽控制項文字,不是章節,絕不能被當成一個 Chapter。
+NON_CHAPTER_LINK_TEXT = re.compile(
+    r"^(上一?[页頁]|下一?[页頁]|首[页頁]|尾[页頁]|末[页頁]|更多|載入更多|加载更多|\d+)$"
+)
 
 # 防盜/反爬安全網
 HIDDEN_STYLE_RE = re.compile(r"display\s*:\s*none|visibility\s*:\s*hidden", re.I)
@@ -151,12 +159,6 @@ class GenericAdapter(SiteAdapter):
             seen.add(nxt)
             return nxt
 
-        for a in soup.find_all("a", href=True):
-            if NEXT_CATALOG_PAGE_TEXT.match(a.get_text(strip=True) or ""):
-                nxt = _accept(a["href"])
-                if nxt:
-                    found.append(nxt)
-
         def _is_pagination_marked(el):
             for node in (el, *el.parents):
                 if not hasattr(node, "get"):
@@ -165,6 +167,17 @@ class GenericAdapter(SiteAdapter):
                 if "page" in marker or "pagination" in marker:
                     return True
             return False
+
+        for a in soup.find_all("a", href=True):
+            text = a.get_text(strip=True) or ""
+            # 「下一頁」語意夠明確,整頁找也安全;「更多」這種泛用詞只信任
+            # 分頁標記元素內、且要求全字比對,避免整頁掃描誤中「更多推薦」。
+            if NEXT_CATALOG_PAGE_TEXT.match(text) or (
+                LOOSE_MORE_PAGE_TEXT.match(text) and _is_pagination_marked(a)
+            ):
+                nxt = _accept(a["href"])
+                if nxt:
+                    found.append(nxt)
 
         for select in soup.find_all("select"):
             # 沒有分頁標記就跳過:字體大小、編碼、主題切換這類 <select> 也常常
@@ -244,7 +257,7 @@ class GenericAdapter(SiteAdapter):
         items = []
         for a in container.find_all("a", href=True):
             text = a.get_text(strip=True)
-            if text:
+            if text and not NON_CHAPTER_LINK_TEXT.match(text):
                 items.append((a, urljoin(base, a["href"]), text))
         return items
 
@@ -482,6 +495,10 @@ class GenericAdapter(SiteAdapter):
     def _strip_hidden(soup):
         """移除 inline display:none / visibility:hidden / hidden 屬性的隱藏干擾文字。"""
         for el in soup.find_all(True):
+            if el.decomposed:
+                # find_all 先拍好整份清單;上一輪把某個祖先 decompose 掉時,
+                # 它底下的子孫標籤物件也一併被清空,這裡再存取會炸 AttributeError。
+                continue
             style = el.get("style", "")
             if el.has_attr("hidden") or (style and HIDDEN_STYLE_RE.search(style)):
                 el.decompose()

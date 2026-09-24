@@ -99,6 +99,27 @@ def test_container_template_matches_by_id_without_dl():
     assert adapter.template_name == "#chapterlist"
 
 
+def test_container_template_excludes_pager_link_from_chapters():
+    """章節清單容器裡混了一個「下一頁」翻頁連結,不能被當成一個章節
+    (Codex review 抓到的 bug:整個容器內的 <a> 一律被當成 Chapter)。
+    """
+    adapter = GenericAdapter()
+    adapter.catalog_url("https://example.test/n/1")
+    html = """
+    <div id="chapterlist">
+      <a href="/n/1/1.html">第一章</a>
+      <a href="/n/1/2.html">第二章</a>
+      <a href="/n/1/3.html">第三章</a>
+      <a href="/n/1/4.html">第四章</a>
+      <a href="/n/1/5.html">第五章</a>
+      <a href="/n/1/index_2.html">下一頁</a>
+    </div>
+    """
+    book = adapter.parse_catalog(html)
+    assert len(book.chapters) == 5
+    assert "下一頁" not in [c.title for c in book.chapters]
+
+
 def test_template_falls_back_to_heuristic_when_too_few_links():
     """命中的模板容器裡不足 5 個有效連結時視為未命中,交給啟發式規則,
     不能因為誤判模板而漏章。
@@ -208,6 +229,23 @@ def test_catalog_page_urls_finds_next_link_outside_the_matched_template_containe
     ]
 
 
+def test_catalog_page_urls_ignores_bare_more_link_outside_pagination_marker():
+    """整頁搜尋「更多」這種泛用詞時,不能誤中不相干的「更多推薦」連結
+    (Codex review 抓到的 bug),只有在分頁標記元素內才信任。
+    """
+    adapter = GenericAdapter()
+    html = '<a href="/promo/more-recommend.html">更多推薦</a>'
+    assert adapter.catalog_page_urls(html, "https://example.test/n/1") == []
+
+
+def test_catalog_page_urls_accepts_bare_more_link_inside_pagination_marker():
+    adapter = GenericAdapter()
+    html = '<div class="pagination"><a href="/n/1/index_2.html">更多</a></div>'
+    assert adapter.catalog_page_urls(html, "https://example.test/n/1") == [
+        "https://example.test/n/1/index_2.html"
+    ]
+
+
 def test_catalog_page_urls_select_pagination_excludes_current_page():
     adapter = GenericAdapter()
     html = ('<div class="pagination"><select><option value="/list_1.html">1</option>'
@@ -234,6 +272,21 @@ def test_parse_chapter_strips_hidden_and_fullwidth_watermark_lines():
       <p style="display:none">隱藏的干擾文字</p>
       <p hidden>另一段隱藏文字</p>
       <p>ｗｗｗ．ｅｘａｍｐｌｅ．ｃｏｍ</p>
+      <p>第二段正文</p>
+    </article>
+    """
+    assert adapter.parse_chapter(html) == "第一段正文\n\n第二段正文"
+
+
+def test_parse_chapter_strips_hidden_container_with_nested_tags():
+    """隱藏元素裡面還有子標籤時,decompose 父層後不能再去存取已經被清空的子孫標籤
+    (Codex review 抓到的 bug:會炸 AttributeError,讓整章解析失敗)。
+    """
+    adapter = GenericAdapter()
+    html = """
+    <article>
+      <p>第一段正文</p>
+      <div style="display:none"><span>隱藏廣告<b>連結</b></span></div>
       <p>第二段正文</p>
     </article>
     """
