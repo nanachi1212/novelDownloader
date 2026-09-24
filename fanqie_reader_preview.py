@@ -162,6 +162,9 @@ def _extract_css(soup: BeautifulSoup, html_path: Path) -> list[str]:
             raise ReaderImportError("保存頁面含有無法確認的候選 CSS 樣式表。")
         if node.name == "link" and node.has_attr("disabled"):
             continue
+        style_type = (node.get("type") or "").strip().lower()
+        if style_type and style_type != "text/css":
+            raise ReaderImportError("保存頁面含有非 CSS 類型的樣式元素。")
         if node.has_attr("title"):
             raise ReaderImportError("保存頁面含有無法確認的 CSS 樣式表組。")
         media = (node.get("media") or "").strip().lower()

@@ -885,6 +885,18 @@ def test_titled_stylesheet_set_fails_closed(tmp_path, tag):
         import_reader_html(page, "999", "101", "第一章", tmp_path / "preview")
 
 
+@pytest.mark.parametrize("tag", [
+    '<style type="text/plain">#reader-content {display:none}</style>',
+    '<link rel="stylesheet" type="text/plain" href="chapter_files/reader.css">',
+])
+def test_non_css_style_elements_fail_closed(tmp_path, tag):
+    page = _saved_reader(tmp_path)
+    page.write_text(page.read_text(encoding="utf-8").replace("</head>", tag + "</head>"),
+                    encoding="utf-8")
+    with pytest.raises(ReaderImportError, match="非 CSS"):
+        import_reader_html(page, "999", "101", "第一章", tmp_path / "preview")
+
+
 @pytest.mark.parametrize("source", [
     "url('font.woff2') format('unsupported'), url('font.woff2') format('woff2')",
     "url('font.woff2') tech(color-COLRv1), url('font.woff2')",
