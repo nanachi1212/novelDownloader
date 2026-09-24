@@ -1,5 +1,6 @@
 """Cloudflare-bypass 抓取層:curl_cffi session、重試、編碼處理、限速、429/503 退避。"""
 import datetime
+import html
 import random
 import re
 import threading
@@ -154,7 +155,7 @@ class Fetcher:
                     continue
 
                 if r.status_code == 200 and "Just a moment" not in text:
-                    visible_text = TAG_RE.sub("", SCRIPT_STYLE_RE.sub("", text)).strip()
+                    visible_text = html.unescape(TAG_RE.sub("", SCRIPT_STYLE_RE.sub("", text))).strip()
                     if (len(text) < SOFT_BLOCK_MAX_LEN and SOFT_BLOCK_RE.search(visible_text)
                             and len(visible_text) < SOFT_BLOCK_MAX_VISIBLE):
                         # 200 但內容其實是「訪問過於頻繁」之類的軟封鎖頁:當限速處理,

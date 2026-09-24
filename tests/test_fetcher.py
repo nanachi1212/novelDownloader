@@ -160,6 +160,17 @@ def test_soft_block_keyword_inside_script_does_not_reject_visible_chapter(monkey
     assert len(fetcher.session.calls) == 1
 
 
+def test_soft_block_matches_html_entity_encoded_visible_message(monkeypatch):
+    monkeypatch.setattr("fetcher.time.sleep", lambda _seconds: None)
+    block = "<html><body><p>&#35831;&#31245;&#21518;&#20877;&#35797;</p></body></html>"
+    expected = "<html><body><p>真正的章節正文</p></body></html>"
+    fetcher = Fetcher(delay=2.0)
+    fetcher.session = FakeSession([FakeResponse(block), FakeResponse(expected)])
+
+    assert fetcher.get("https://example.test/ch1") == expected
+    assert len(fetcher.session.calls) == 2
+
+
 def test_soft_block_does_not_false_positive_on_short_real_content(monkeypatch):
     """單純字數少的正文不能被誤判成軟封鎖頁(必須同時命中關鍵字才算)。"""
     fetcher = Fetcher()
