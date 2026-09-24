@@ -12,6 +12,7 @@ from bs4 import BeautifulSoup
 
 from fanqie_decoder import decode_chapter
 from fetcher import FetchError, Fetcher
+from state_io import read_json, write_json
 from .base import BookInfo, Chapter, SiteAdapter
 
 BOOK_ID_RE = re.compile(r"(?:/page/|bookId=)(\d+)", re.I)
@@ -285,6 +286,17 @@ class FanqieAdapter(SiteAdapter):
             return f"{item_ids[0]}.txt"
         digest = hashlib.sha256(",".join(item_ids).encode("ascii")).hexdigest()[:16]
         return f"{item_ids[0]}-{digest}.txt"
+
+    def restore_cache_state(self, cache):
+        state = read_json(Path(cache) / "fanqie_decoder.json", {})
+        if (isinstance(state, dict) and state.get("book_id") == getattr(self, "_book_id", None)
+                and type(state.get("mode")) is int and state["mode"] in (0, 1)):
+            self._decoder_mode = state["mode"]
+
+    def save_cache_state(self, cache):
+        if self._decoder_mode in (0, 1):
+            write_json(Path(cache) / "fanqie_decoder.json",
+                       {"book_id": self._book_id, "mode": self._decoder_mode})
 
     def chapter_source_url(self, html, url):
         match = re.fullmatch(r"https://fanqienovel\.com/reader/(\d+)", url)

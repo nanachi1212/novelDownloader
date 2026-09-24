@@ -516,6 +516,7 @@ def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
     cache = cache_root() / (adapter.book_id(url) + ("-merged" if merged else ""))
     cache.mkdir(parents=True, exist_ok=True)
     prior_progress = read_json(cache / "progress.json", {})
+    adapter.restore_cache_state(cache)
     if (isinstance(prior_progress, dict) and prior_progress.get("total_chapters")
             and prior_progress["total_chapters"] != total_all and any(cache.glob("*.txt"))):
         callback("catalog", 0, 1,
@@ -575,6 +576,7 @@ def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
                 raise ValueError(
                     f"[自動偵測] 第一章只解析出 {len(content)} 字,通用模式可能抓錯正文區塊,"
                     "已中止下載;請回報網址讓我寫專屬 adapter")
+            adapter.save_cache_state(cache)
             atomic_write_text(cache_file, content)
             active_fetcher.polite_sleep()
             downloaded = True
@@ -627,6 +629,7 @@ def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
                 last_error = str(exc)
                 remaining.append((idx, ch.title))
                 continue
+            adapter.save_cache_state(cache)
             atomic_write_text(cache_file, content)
             fetcher.polite_sleep()
             results[n - 1] = (ch.title, cache_file)

@@ -240,6 +240,41 @@ def test_same_count_directory_reorder_reuses_only_matching_item_ids(tmp_path, mo
     assert text.index("这里有人") < text.index("人在这里")
 
 
+def test_resumed_short_pua_chapter_uses_persisted_mode(tmp_path, monkeypatch):
+    chapter_calls = []
+    short_raw = chr(0xE3E8 + CHARSETS[0].index("人")) * 5
+
+    class FakeFetcher:
+        def __init__(self, **_kwargs):
+            self.last_response_headers = {}
+            self.last_status_code = 200
+
+        def get(self, url, **_kwargs):
+            if "/page/" in url:
+                return _meta()
+            if "/directory/detail" in url:
+                return _directory(_item("101"), _item("202"))
+            item_id = url.rsplit("/", 1)[-1]
+            chapter_calls.append(item_id)
+            raw = RAW if item_id == "101" else short_raw
+            return _reader(item_id=item_id, content=f"<p>{raw}</p>")
+
+        def polite_sleep(self):
+            pass
+
+    monkeypatch.setattr(downloader_task, "Fetcher", FakeFetcher)
+    monkeypatch.setattr(downloader_task, "cache_root", lambda: tmp_path / "cache")
+    monkeypatch.setattr(downloader_task, "load_rules", lambda _site: [])
+    downloader_task.download_novel(BOOK_URL, tmp_path / "out", delay=0, retries=1, end=1)
+    state = json.loads((tmp_path / "cache" / BOOK_ID / "fanqie_decoder.json").read_text(encoding="utf-8"))
+    assert state == {"book_id": BOOK_ID, "mode": 0}
+    result = downloader_task.download_novel(BOOK_URL, tmp_path / "out", delay=0,
+                                            retries=1, start=2, end=2)
+    assert chapter_calls == ["101", "202"]
+    assert "人人人人人" in result.read_text(encoding="utf-8")
+    assert (tmp_path / "cache" / BOOK_ID / "202.txt").read_text(encoding="utf-8") == "人人人人人"
+
+
 def test_merged_chapter_cache_key_tracks_all_item_ids():
     from sites.base import Chapter
     adapter = FanqieAdapter()

@@ -70,6 +70,12 @@ class SiteAdapter:
         """Name a chapter cache entry; sites with stable IDs may override it."""
         return f"{index:04d}.txt"
 
+    def restore_cache_state(self, cache) -> None:
+        """Restore optional adapter state before cached chapters are reused."""
+
+    def save_cache_state(self, cache) -> None:
+        """Persist optional adapter state before a parsed chapter is cached."""
+
     def chapter_source_url(self, html: str, url: str):
         """章節頁以 JavaScript 載入正文時,回傳真正正文 URL;一般網站回傳 None。"""
         return None
