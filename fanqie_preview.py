@@ -26,6 +26,17 @@ ACCESS_LABEL = {
 }
 
 
+def load_cached_source_response(path, book_id, item_id):
+    """Return the original API response text from a validated Preview envelope."""
+    if not validate_raw_cache(path, book_id, item_id):
+        raise FanqieError("Preview 快取無效，無法開啟原站回應。")
+    envelope = json.loads(Path(path).read_text(encoding="utf-8"))
+    raw = envelope.get("source_response_text")
+    if not isinstance(raw, str):
+        raise FanqieError("Preview 快取缺少原站回應文字。")
+    return raw
+
+
 class _FanqieWorker(QThread):
     completed = pyqtSignal(object)
     failed = pyqtSignal(str)
@@ -291,8 +302,8 @@ class FanqiePreviewDialog(QDialog):
         if not path or not path.is_file() or not chapter:
             return
         try:
-            raw = path.read_text(encoding="utf-8")
-        except OSError as exc:
+            raw = load_cached_source_response(path, self.book_id, chapter.item_id)
+        except (OSError, FanqieError) as exc:
             QMessageBox.warning(self, "讀取原始資料失敗", str(exc))
             return
         _RawPreview(chapter.title, raw, self).exec()

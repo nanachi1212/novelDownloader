@@ -9,6 +9,7 @@ from sites.fanqie import (
     chapter_cache_path, create_fetcher, parse_book_id, parse_directory_response,
     save_raw_chapters,
 )
+from fanqie_preview import load_cached_source_response
 
 
 def _item(item_id, title, volume, **status):
@@ -195,6 +196,20 @@ def test_invalid_existing_preview_cache_is_not_overwritten(tmp_path):
     with pytest.raises(FanqieError):
         save_raw_chapters(ShouldNotFetch(), "999", [chapter], preview_root, fetcher=object())
     assert path.read_text(encoding="utf-8") == "{}"
+
+
+def test_raw_preview_reads_source_response_not_cache_envelope(tmp_path):
+    chapter = _public_chapter("101")
+    path = chapter_cache_path(tmp_path / "preview" / "fanqie", "999", chapter.item_id)
+    path.parent.mkdir(parents=True)
+    source = '{"code":0,"data":{"chapterData":{"itemId":"101","content":"原始\u3402字元"}}}'
+    envelope = {
+        "book_id": "999", "item_id": "101", "source_response_text": source,
+        "source_headers": {"x-tt-zhal": "font-data"},
+    }
+    path.write_text(json.dumps(envelope, ensure_ascii=False), encoding="utf-8")
+
+    assert load_cached_source_response(path, "999", "101") == source
 
 
 def test_preview_adapter_cannot_export_unrestored_text_and_is_registered():
