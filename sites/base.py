@@ -66,6 +66,10 @@ class SiteAdapter:
     def validate_response(self, fetcher) -> None:
         """Reject a response that signals a site access gate, including HTTP 200."""
 
+    def chapter_cache_filename(self, chapter: Chapter, index: int) -> str:
+        """Name a chapter cache entry; sites with stable IDs may override it."""
+        return f"{index:04d}.txt"
+
     def chapter_source_url(self, html: str, url: str):
         """章節頁以 JavaScript 載入正文時,回傳真正正文 URL;一般網站回傳 None。"""
         return None

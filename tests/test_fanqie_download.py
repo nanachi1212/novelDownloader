@@ -167,7 +167,7 @@ def test_fanqie_txt_epub_resume_and_challenge_never_cached(tmp_path, monkeypatch
     response[0] = "<html>bdturing challenge</html>"
     with pytest.raises(AccessVerificationRequired):
         downloader_task.download_novel(BOOK_URL, tmp_path / "out", delay=0, retries=1, end=1)
-    chapter_cache = tmp_path / "cache" / BOOK_ID / "0001.txt"
+    chapter_cache = tmp_path / "cache" / BOOK_ID / f"{ITEM_ID}.txt"
     assert not chapter_cache.exists()
 
     response[0] = _reader()
@@ -200,3 +200,50 @@ def test_fanqie_txt_epub_resume_and_challenge_never_cached(tmp_path, monkeypatch
         assert "人在这里" in archive.read("OEBPS/chapter1.xhtml").decode("utf-8")
     assert calls.count(READER_URL) == chapter_calls
     assert "\ue3e8" not in chapter_cache.read_text(encoding="utf-8")
+
+
+def test_same_count_directory_reorder_reuses_only_matching_item_ids(tmp_path, monkeypatch):
+    item_ids = ["101", "202"]
+    chapter_calls = []
+    other_raw = "".join(chr(0xE3E8 + CHARSETS[0].index(char))
+                        for char in "这里有人" + "人在这里") * 12
+
+    class FakeFetcher:
+        def __init__(self, **_kwargs):
+            self.last_response_headers = {}
+            self.last_status_code = 200
+
+        def get(self, url, **_kwargs):
+            if "/page/" in url:
+                return _meta()
+            if "/directory/detail" in url:
+                return _directory(*(_item(item_id) for item_id in item_ids))
+            item_id = url.rsplit("/", 1)[-1]
+            chapter_calls.append(item_id)
+            raw = RAW if item_id == "101" else other_raw
+            return _reader(item_id=item_id, content=f"<p>{raw}</p>")
+
+        def polite_sleep(self):
+            pass
+
+    monkeypatch.setattr(downloader_task, "Fetcher", FakeFetcher)
+    monkeypatch.setattr(downloader_task, "cache_root", lambda: tmp_path / "cache")
+    monkeypatch.setattr(downloader_task, "load_rules", lambda _site: [])
+    downloader_task.download_novel(BOOK_URL, tmp_path / "out", delay=0, retries=1, end=2)
+    assert chapter_calls == ["101", "202"]
+    cache = tmp_path / "cache" / BOOK_ID
+    assert (cache / "101.txt").is_file() and (cache / "202.txt").is_file()
+    item_ids.reverse()
+    output = downloader_task.download_novel(BOOK_URL, tmp_path / "out", delay=0, retries=1, end=2)
+    assert chapter_calls == ["101", "202"]
+    text = output.read_text(encoding="utf-8")
+    assert text.index("这里有人") < text.index("人在这里")
+
+
+def test_merged_chapter_cache_key_tracks_all_item_ids():
+    from sites.base import Chapter
+    adapter = FanqieAdapter()
+    chapter = Chapter("第1章", READER_URL, ["https://fanqienovel.com/reader/202"])
+    first = adapter.chapter_cache_filename(chapter, 1)
+    chapter.extra_urls.append("https://fanqienovel.com/reader/303")
+    assert first != adapter.chapter_cache_filename(chapter, 1)

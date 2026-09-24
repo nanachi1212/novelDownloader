@@ -359,6 +359,24 @@ def test_import_respects_css_specificity_for_reader_weight(tmp_path):
     assert preview.font_sha256 == hashlib.sha256(medium).hexdigest()
 
 
+def test_id_specificity_outweighs_many_classes(tmp_path):
+    page = _saved_reader(tmp_path)
+    class_names = " ".join(f"c{i}" for i in range(12))
+    source = page.read_text(encoding="utf-8").replace("<p>", f'<p class="{class_names}">')
+    page.write_text(source, encoding="utf-8")
+    assets = tmp_path / "chapter_files"
+    (assets / "bold.woff2").write_bytes(b"wOF2bold-font")
+    classes = "".join(f".c{i}" for i in range(12))
+    (assets / "reader.css").write_text(
+        "@font-face {font-family:MappedFont;font-weight:400;src:url('font.woff2');}"
+        "@font-face {font-family:MappedFont;font-weight:700;src:url('bold.woff2');}"
+        "#reader-content {font-family:MappedFont;}"
+        f"{classes} {{font-weight:700;}}"
+        "#reader-content p {font-weight:400;}", encoding="utf-8")
+    preview = import_reader_html(page, "999", "101", "第一章", tmp_path / "preview")
+    assert preview.font_sha256 == hashlib.sha256(FONT_BYTES).hexdigest()
+
+
 def test_import_respects_important_over_specificity_and_inline_style(tmp_path):
     page = _saved_reader(tmp_path)
     assets = tmp_path / "chapter_files"
@@ -552,6 +570,22 @@ def test_inert_template_gate_markup_does_not_block_public_reader(tmp_path):
     page.write_text(source, encoding="utf-8")
     preview = import_reader_html(page, "999", "101", "第一章", tmp_path / "preview")
     assert preview.paragraph_count == 2
+
+
+def test_inert_reader_paragraphs_and_inline_text_are_not_published(tmp_path):
+    page = _saved_reader(tmp_path)
+    source = page.read_text(encoding="utf-8")
+    source = source.replace("<p>第二段", '<template><p>购买本章</p></template>'
+                            '<div hidden><p>请先登录</p></div>'
+                            '<div aria-hidden="true"><p>驗證碼</p></div>'
+                            '<div inert><p>隱藏正文</p></div>'
+                            '<p>第二段<span style="display:none">隐藏字</span>')
+    page.write_text(source, encoding="utf-8")
+    preview = import_reader_html(page, "999", "101", "第一章", tmp_path / "preview")
+    document = preview.preview_path.read_text(encoding="utf-8")
+    assert preview.paragraph_count == 2
+    for hidden in ("购买本章", "请先登录", "驗證碼", "隱藏正文", "隐藏字"):
+        assert hidden not in document
 
 
 def test_reader_body_containing_only_gate_notice_is_rejected(tmp_path):

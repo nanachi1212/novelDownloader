@@ -1,4 +1,5 @@
 """番茄小說公開章節與獨立原始預覽資料 adapter。"""
+import hashlib
 import json
 import os
 import re
@@ -272,6 +273,18 @@ class FanqieAdapter(SiteAdapter):
             match = re.fullmatch(r"https://fanqienovel\.com/reader/(\d+)", url)
             if not match or getattr(self, "_chapter_access", {}).get(match.group(1)) != "public_candidate":
                 raise AccessVerificationRequired("所選番茄章節的目錄存取旗標不是明確公開，已停止下載。")
+
+    def chapter_cache_filename(self, chapter, index):
+        item_ids = []
+        for url in [chapter.url, *chapter.extra_urls]:
+            match = re.fullmatch(r"https://fanqienovel\.com/reader/(\d+)", url)
+            if not match:
+                raise FanqieError("番茄快取章節網址沒有有效 itemId。")
+            item_ids.append(match.group(1))
+        if len(item_ids) == 1:
+            return f"{item_ids[0]}.txt"
+        digest = hashlib.sha256(",".join(item_ids).encode("ascii")).hexdigest()[:16]
+        return f"{item_ids[0]}-{digest}.txt"
 
     def chapter_source_url(self, html, url):
         match = re.fullmatch(r"https://fanqienovel\.com/reader/(\d+)", url)

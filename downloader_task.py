@@ -551,7 +551,7 @@ def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
     def fetch_job(n, idx, ch):
         if cancel_check and cancel_check():
             raise Cancelled("使用者中止,已下載的章節保留在快取,重跑會續傳")
-        cache_file = cache / f"{idx:04d}.txt"  # 用全書絕對章號命名,範圍下載也能共用快取
+        cache_file = cache / adapter.chapter_cache_filename(ch, idx)
         content = ""
         if cache_file.exists():
             try:
@@ -620,7 +620,7 @@ def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
         for n, idx, ch in failures:
             if cancel_check and cancel_check():
                 raise Cancelled("使用者中止,已下載的章節保留在快取,重跑會續傳")
-            cache_file = cache / f"{idx:04d}.txt"
+            cache_file = cache / adapter.chapter_cache_filename(ch, idx)
             try:
                 content = fetch_parsed_chapter(fetcher, adapter, ch, retries)
             except (FetchError, ValueError) as exc:
