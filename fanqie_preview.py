@@ -167,7 +167,15 @@ class FanqiePreviewDialog(QDialog):
         except FanqieError as exc:
             QMessageBox.warning(self, "番茄網址錯誤", str(exc))
             return
+        self._clear_directory()
         self._start(_FanqieWorker("directory", self.url_input.text().strip(), parent=self))
+
+    def _clear_directory(self):
+        self.book_id = ""
+        self.chapters = []
+        self.tree.clear()
+        self.info.setText("目錄尚未載入；完整目錄會核對來源 ID 清單後顯示。")
+        self.update_buttons()
 
     def save_selected(self):
         chapter = self._selected_chapter()
