@@ -136,13 +136,49 @@ def test_gui_initialization_failure_returns_error_instead_of_empty_window(monkey
     messages = []
     monkeypatch.setattr(gui_launcher, "QApplication", lambda _argv: app)
     monkeypatch.setattr(gui_launcher.QMessageBox, "critical", lambda *args: messages.append(args[-1]))
+    monkeypatch.setattr(gui_launcher, "configure_logging", lambda: None)
 
     def fail():
         raise app_paths.ApplicationDataError("migration blocked")
 
     monkeypatch.setattr(gui_launcher, "prepare_app_data", fail)
     assert gui_launcher.main() == 1
-    assert messages == ["migration blocked"]
+    assert len(messages) == 1 and "migration blocked" in messages[0]
+
+
+def test_gui_launcher_shows_and_activates_main_window_before_event_loop(monkeypatch):
+    import gui_launcher
+    from PyQt6.QtWidgets import QApplication, QMainWindow, QSystemTrayIcon
+
+    real_app = QApplication.instance() or QApplication([])
+    visible = []
+
+    class AppProxy:
+        def __init__(self, _argv):
+            pass
+
+        def processEvents(self):
+            real_app.processEvents()
+
+        def exec(self):
+            real_app.processEvents()
+            visible.extend(window for window in real_app.topLevelWidgets()
+                           if isinstance(window, QMainWindow) and window.isVisible())
+            return 0
+
+    monkeypatch.setattr(gui_launcher, "prepare_app_data", lambda: None)
+    monkeypatch.setattr(gui_launcher, "configure_logging", lambda: None)
+    monkeypatch.setattr(gui_launcher, "migration_notice", lambda: "")
+    monkeypatch.setattr(QSystemTrayIcon, "isSystemTrayAvailable", lambda: False)
+    monkeypatch.setattr(gui_launcher, "QApplication", AppProxy)
+
+    try:
+        assert gui_launcher.main() == 0
+        assert len(visible) == 1
+        assert visible[0].windowTitle().startswith("小說下載器")
+    finally:
+        for window in visible:
+            window.close()
 
 
 def test_conflict_notice_identifies_preserved_legacy_data(monkeypatch, tmp_path):

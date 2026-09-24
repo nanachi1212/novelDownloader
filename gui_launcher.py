@@ -30,7 +30,7 @@ if getattr(sys, "frozen", False):
             os.environ["PATH"] = str(dll_dir) + os.pathsep + os.environ.get("PATH", "")
 
 from PyQt6.QtWidgets import QApplication, QMessageBox
-from app_paths import ApplicationDataError, migration_notice, prepare_app_data
+from app_paths import migration_notice, prepare_app_data
 from app_logging import configure_logging
 
 
@@ -47,10 +47,20 @@ def main():
         if notice:
             window.log.append(notice)
             logging.getLogger(__name__).warning(notice)
-    except (ApplicationDataError, OSError) as exc:
-        QMessageBox.critical(None, "應用程式資料無法載入", str(exc))
+    except Exception as exc:
+        logging.getLogger(__name__).exception("GUI initialization failed")
+        QMessageBox.critical(
+            None, "應用程式無法啟動",
+            f"主視窗初始化失敗：{type(exc).__name__}: {exc}",
+        )
         return 1
+    # Restore a normal top-level window explicitly. This also avoids leaving a
+    # running QApplication with an invisible main window after initialization.
+    window.showNormal()
     window.show()
+    window.raise_()
+    window.activateWindow()
+    app.processEvents()
     return app.exec()
 
 
