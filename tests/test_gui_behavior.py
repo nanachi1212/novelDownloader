@@ -4,9 +4,11 @@ import time
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt6.QtWidgets import QApplication, QSystemTrayIcon
+from PyQt6.QtWidgets import QApplication, QMessageBox, QSystemTrayIcon
 
+from fanqie_preview import FanqiePreviewDialog
 import main_window
+from sites.fanqie import FanqieChapter
 from state_io import read_json
 
 
@@ -122,6 +124,55 @@ def test_adding_existing_stopped_url_resumes_it(monkeypatch, tmp_path):
         assert "已將停止/失敗的任務恢復為等待" in window.log.toPlainText()
     finally:
         window.close()
+
+
+def test_fanqie_preview_is_exposed_and_not_queued_for_txt(monkeypatch, tmp_path):
+    app, window = make_window(monkeypatch, tmp_path)
+    messages = []
+    monkeypatch.setattr(QMessageBox, "information", lambda *args: messages.append(args[2]))
+    try:
+        assert window.fanqie_preview_btn.text() == "番茄小說：預覽支援"
+        window.url_input.setText("https://fanqienovel.com/page/123456789")
+        window.add_btn.click()
+        app.processEvents()
+        assert window.jobs == []
+        assert messages and "不能加入 TXT／EPUB" in messages[0]
+    finally:
+        window.close()
+
+
+def test_fanqie_preview_dialog_directory_and_selection_controls(monkeypatch, tmp_path):
+    monkeypatch.setenv("NOVELDOWNLOADER_DATA_DIR", str(tmp_path / "profile"))
+    app = QApplication.instance() or QApplication([])
+    dialog = FanqiePreviewDialog("https://fanqienovel.com/page/123456789")
+    try:
+        dialog.book_id = "123456789"
+        dialog.chapters = [
+            FanqieChapter("100", "第一章", "第一卷", 1, {
+                "needPay": 0, "isPaidPublication": False,
+                "isPaidStory": False, "isChapterLock": False,
+            }),
+            FanqieChapter("200", "狀態不明章", "第一卷", 2, {
+                "needPay": 0, "isChapterLock": True,
+            }),
+        ]
+        dialog._populate_directory()
+        assert dialog.tree.topLevelItemCount() == 2
+        assert dialog.tree.topLevelItem(0).text(0) == "第一卷"
+        assert dialog.tree.topLevelItem(0).text(2) == "第一章"
+        assert dialog.tree.topLevelItem(0).text(3).startswith("公開")
+        assert not dialog.tree.topLevelItem(1).isDisabled()
+        dialog.tree.setCurrentItem(dialog.tree.topLevelItem(0))
+        app.processEvents()
+        assert dialog.save_selected_button.isEnabled()
+        assert not dialog.preview_button.isEnabled()
+        dialog.tree.setCurrentItem(dialog.tree.topLevelItem(1))
+        app.processEvents()
+        assert not dialog.save_selected_button.isEnabled()
+        assert dialog.original_button.isEnabled()
+        assert "視覺預覽不代表文字已還原" in dialog.warning.text()
+    finally:
+        dialog.close()
 
 
 def test_job_logs_are_separated_per_queue(monkeypatch, tmp_path):
