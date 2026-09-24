@@ -90,6 +90,13 @@ def test_reader_paragraph_breaks_survive_html_flattening():
     assert body == "人在这里" * 12 + "\n下段"
 
 
+def test_pua_encoded_chapter_heading_is_removed_after_decoding():
+    adapter = _adapter()
+    adapter.chapter_source_url(_reader(), READER_URL)
+    heading = chr(0xE3E8 + CHARSETS[0].index("在"))
+    assert adapter.parse_chapter(_reader(content=f"<p>{heading}</p><p>{RAW}</p>"), "在") == "人在这里" * 12
+
+
 def test_directory_becomes_ordered_bookinfo_and_fails_closed():
     adapter = FanqieAdapter()
     assert adapter.catalog_url(BOOK_URL).endswith("bookId=999")

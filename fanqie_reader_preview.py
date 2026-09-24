@@ -33,7 +33,6 @@ READER_SELECTORS = (
 FONT_FACE_RE = re.compile(r"@font-face\s*\{([^}]+)\}", re.I | re.S)
 CSS_RULE_RE = re.compile(r"([^{}]+)\{([^{}]*)\}", re.S)
 URL_RE = re.compile(r"url\(\s*(['\"]?)(.*?)\1\s*\)", re.I)
-FAMILY_RE = re.compile(r'''(?:^|;)\s*font-family\s*:\s*("(?:\\.|[^"])*"|'(?:\\.|[^'])*'|[^;}]+)''', re.I)
 CSS_COMMENT_RE = re.compile(r"/\*.*?\*/", re.S)
 CONDITIONAL_CSS_RE = re.compile(
     r"@(?:media|supports|container|layer|document|scope|keyframes|-webkit-keyframes)\b[^{}]*\{", re.I
@@ -247,8 +246,7 @@ def _conditional_font_affects_reader(conditional: list[str], reader_node: Tag,
                if isinstance(node, Tag) and not _is_inert_node(node, visibility_rules))]
     for block in conditional:
         for face in FONT_FACE_RE.findall(block):
-            declared = FAMILY_RE.search(face)
-            if declared and _first_family(declared) == family:
+            if _font_family_value(_face_descriptor(face, "font-family")) == family:
                 return True
         for selector_text, declarations in CSS_RULE_RE.findall(block):
             if (not FONT_ATTRIBUTE_RE.search(declarations)
@@ -436,10 +434,6 @@ def _font_family_value(value: str) -> str:
     return re.sub(r"\s*!important\s*$", "", value.split(",", 1)[0], flags=re.I).strip().strip("'\"")
 
 
-def _first_family(match) -> str:
-    return _font_family_value(match.group(1))
-
-
 FONT_ATTRIBUTE_RE = re.compile(r"(?:^|;)\s*(font-family|font-weight|font-style|font)\s*:\s*([^;]+)", re.I)
 VISIBILITY_RE = re.compile(r"(?:^|;)\s*(display|visibility)\s*:\s*([^;]+)", re.I)
 FONT_SIZE_RE = re.compile(
@@ -594,19 +588,17 @@ def _font_style(value: str) -> str:
 
 
 def _face_matches(face: str, weight: int, style: str) -> bool:
-    declared_weight = re.search(r"(?:^|;)\s*font-weight\s*:\s*([^;}]+)", face, re.I)
-    weight_value = declared_weight.group(1).strip().lower() if declared_weight else "normal"
+    weight_value = _face_descriptor(face, "font-weight").lower() or "normal"
     parts = weight_value.split()
     if len(parts) == 2 and all(re.fullmatch(r"[1-9]00", part) for part in parts):
         weight_matches = int(parts[0]) <= weight <= int(parts[1])
     else:
         weight_matches = _font_weight(weight_value) == weight
-    declared_style = re.search(r"(?:^|;)\s*font-style\s*:\s*([^;}]+)", face, re.I)
-    style_value = declared_style.group(1).strip().lower() if declared_style else "normal"
+    style_value = _face_descriptor(face, "font-style").lower() or "normal"
     return weight_matches and _font_style(style_value) == style
 
 
-def _effective_font_src(face: str) -> str:
+def _face_descriptor(face: str, name: str) -> str:
     declarations = []
     start = depth = 0
     quote = ""
@@ -629,9 +621,10 @@ def _effective_font_src(face: str) -> str:
             declarations.append(face[start:index])
             start = index + 1
     declarations.append(face[start:])
-    sources = [match.group(1).strip() for declaration in declarations
-               if (match := re.fullmatch(r"\s*src\s*:\s*(.*)", declaration, re.I | re.S))]
-    return sources[-1] if sources else ""
+    values = [match.group(1).strip() for declaration in declarations
+              if (match := re.fullmatch(rf"\s*{re.escape(name)}\s*:\s*(.*)",
+                                       declaration, re.I | re.S))]
+    return values[-1] if values else ""
 
 
 def _font_resource(css_blocks: list[str], family: str, weight: int, style: str,
@@ -639,7 +632,7 @@ def _font_resource(css_blocks: list[str], family: str, weight: int, style: str,
     root = html_path.parent
     remote_font_missing = False
     faces = [face for block in css_blocks for face in FONT_FACE_RE.findall(block)
-             if (declared := FAMILY_RE.search(face)) and _first_family(declared) == family]
+             if _font_family_value(_face_descriptor(face, "font-family")) == family]
 
     matching_faces = [face for face in faces if _face_matches(face, weight, style)]
     if faces and not matching_faces:
@@ -648,7 +641,7 @@ def _font_resource(css_blocks: list[str], family: str, weight: int, style: str,
            for face in matching_faces):
         raise ReaderImportError("正文字型使用 unicode-range 分割字型，無法安全建立單一字型預覽。")
     for face in matching_faces:
-        for src in URL_RE.finditer(_effective_font_src(face)):
+        for src in URL_RE.finditer(_face_descriptor(face, "src")):
             uri = src.group(2).strip()
             if uri.lower().startswith("data:"):
                 header, separator, payload = uri.partition(",")

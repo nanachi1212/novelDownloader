@@ -770,6 +770,22 @@ def test_font_face_uses_last_src_declaration(tmp_path):
     assert preview.font_sha256 == hashlib.sha256(FONT_BYTES).hexdigest()
 
 
+@pytest.mark.parametrize("families,valid", [
+    ("font-family:'MappedFont';font-family:'OtherFont';", False),
+    ("font-family:'OtherFont';font-family:'MappedFont';", True),
+])
+def test_font_face_uses_last_family_descriptor(tmp_path, families, valid):
+    page = _saved_reader(tmp_path)
+    css = tmp_path / "chapter_files" / "reader.css"
+    css.write_text(css.read_text(encoding="utf-8").replace(
+        "font-family: 'MappedFont'; src:", f"{families} src:"), encoding="utf-8")
+    if valid:
+        assert import_reader_html(page, "999", "101", "第一章", tmp_path / "preview").paragraph_count == 2
+    else:
+        with pytest.raises(ReaderImportError, match="字型"):
+            import_reader_html(page, "999", "101", "第一章", tmp_path / "preview")
+
+
 def test_unrelated_input_visibility_selector_does_not_block_import(tmp_path):
     page = _saved_reader(tmp_path)
     css = tmp_path / "chapter_files" / "reader.css"

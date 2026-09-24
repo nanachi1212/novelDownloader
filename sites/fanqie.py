@@ -411,9 +411,14 @@ class FanqieAdapter(SiteAdapter):
             paragraphs = _chapter_paragraphs(str(node)) if node else []
         if not paragraphs:
             raise FanqieError("番茄 reader 頁沒有完整可辨識的段落正文，未保存錯誤頁。")
-        if title and paragraphs[0].strip() == title.strip():
-            paragraphs.pop(0)
         body = "\n\n".join(paragraphs)
+        decoded = decode_chapter(body, getattr(self, "_decoder_mode", None))
+        decoded_paragraphs = decoded.text.split("\n\n")
+        if title and decoded_paragraphs[0].strip() == title.strip():
+            decoded_paragraphs.pop(0)
+        body = "\n\n".join(decoded_paragraphs)
+        if not body.strip():
+            raise FanqieError("番茄 reader 頁只有章名，缺少正文。")
         expected_words = chapter_data.get("chapterWordNumber")
         if isinstance(expected_words, str) and re.fullmatch(r"[0-9]+", expected_words):
             expected_words = int(expected_words)
@@ -422,10 +427,9 @@ class FanqieAdapter(SiteAdapter):
         if (type(expected_words) is int and expected_words > 0
                 and len(body.replace("\n", "")) < expected_words * 0.7):
             raise FanqieError("番茄 reader 正文短於章節字數，可能是截斷內容；未保存。")
-        decoded = decode_chapter(body, getattr(self, "_decoder_mode", None))
         if decoded.mode is not None:
             self._decoder_mode = decoded.mode
-        return decoded.text
+        return body
 
 
 def chapter_cache_path(root, book_id, item_id):
