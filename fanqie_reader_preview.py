@@ -267,11 +267,10 @@ def _conditional_font_affects_reader(conditional: list[str], reader_node: Tag,
 
 
 def _conditional_visibility_affects_saved_content(conditional: list[str], soup: BeautifulSoup) -> bool:
-    reader = next((node for selector in READER_SELECTORS
-                   if (node := soup.select_one(selector)) is not None), None)
     nodes = []
-    if reader is not None:
-        nodes.extend([reader, *reader.parents, *reader.descendants])
+    for selector in READER_SELECTORS:
+        for reader in soup.select(selector):
+            nodes.extend([reader, *reader.parents, *reader.descendants])
     for node in soup.find_all(True):
         identifiers = [node.get("id", ""), *(node.get("class") or [])]
         if (any(value.lower() in GATE_UI_IDS for value in identifiers if isinstance(value, str))

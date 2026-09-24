@@ -813,6 +813,19 @@ def test_unresolved_reader_display_fails_closed(tmp_path):
         import_reader_html(page, "999", "101", "第一章", tmp_path / "preview")
 
 
+def test_conditional_visibility_checks_later_reader_candidate(tmp_path):
+    page = _saved_reader(tmp_path)
+    source = page.read_text(encoding="utf-8").replace(
+        '<div id="reader-content" onclick="steal()">',
+        '<div id="reader-content"></div><div class="muye-reader-content" onclick="steal()">')
+    page.write_text(source, encoding="utf-8")
+    css = tmp_path / "chapter_files" / "reader.css"
+    css.write_text(css.read_text(encoding="utf-8")
+                   + "@media screen {.muye-reader-content {display:none}}", encoding="utf-8")
+    with pytest.raises(ReaderImportError, match="條件式 CSS 可見性"):
+        import_reader_html(page, "999", "101", "第一章", tmp_path / "preview")
+
+
 def test_inline_display_comment_is_evaluated(tmp_path):
     page = _saved_reader(tmp_path)
     page.write_text(page.read_text(encoding="utf-8").replace(
