@@ -153,9 +153,10 @@ class GenericAdapter(SiteAdapter):
         # 多個「全部章節」連結常見於推薦卡片。只在唯一候選與目前書目有
         # 明確路徑關係時選它，避免跟到推薦書或全站目錄。
         current = urlparse(url)
+        stable_book_id_keys = {"id", "bid", "bookid", "novelid", "bookno", "novelno", "book", "novel"}
         current_book_params = [
             (key, value) for key, value in parse_qsl(current.query, keep_blank_values=True)
-            if key.lower().endswith("id") or key.lower() in {"book", "novel"}
+            if key.lower().replace("_", "").replace("-", "") in stable_book_id_keys
         ]
 
         def route_stem(path):
@@ -187,7 +188,8 @@ class GenericAdapter(SiteAdapter):
         # 容器「外面」(清單下方的頁碼列),所以「下一頁」文字要整頁搜尋,
         # 不能只找 self._catalog_container 裡面,否則常常什麼都找不到。
         soup = BeautifulSoup(html, "lxml")
-        host = urlparse(url).netloc
+        current = urlparse(url)
+        host = current.netloc
         found, seen = [], {url}
 
         def _accept(href):
@@ -241,11 +243,47 @@ class GenericAdapter(SiteAdapter):
                 depth += 1
             return False
 
+        def _same_catalog_page_family(candidate_url):
+            candidate = urlparse(candidate_url)
+            if (candidate.scheme, candidate.netloc) != (current.scheme, current.netloc):
+                return False
+            if candidate.query == current.query:
+                def path_page(path):
+                    match = re.match(
+                        r"^(.*?(?:index|page|list|catalog))(?:(?:_|-)(\d+))?(\.[^/.]+)?$",
+                        path, flags=re.I,
+                    )
+                    if match:
+                        base, number, extension = match.groups()
+                        return base + "#" + (extension or ""), int(number) if number else 1
+                    match = re.match(r"^(.*?(?:page|index|list|catalog)/)(\d+)/?$", path, flags=re.I)
+                    if match:
+                        return match.group(1) + "#", int(match.group(2))
+                    return None
+
+                current_page = path_page(current.path)
+                candidate_page = path_page(candidate.path)
+                return bool(current_page and candidate_page and current_page[0] == candidate_page[0])
+            if candidate.path != current.path:
+                return False
+            page_keys = {"page", "p", "page_no", "pageno", "page_num", "page_number"}
+            current_query = parse_qsl(current.query, keep_blank_values=True)
+            candidate_query = parse_qsl(candidate.query, keep_blank_values=True)
+            current_pages = [(key.lower(), value) for key, value in current_query if key.lower() in page_keys]
+            candidate_pages = [(key.lower(), value) for key, value in candidate_query if key.lower() in page_keys]
+            if not current_pages or not candidate_pages:
+                return False
+            current_base = sorted((key, value) for key, value in current_query if key.lower() not in page_keys)
+            candidate_base = sorted((key, value) for key, value in candidate_query if key.lower() not in page_keys)
+            return current_base == candidate_base and current_pages[0][0] == candidate_pages[0][0]
+
         for a in soup.find_all("a", href=True):
             text = a.get_text(strip=True) or ""
-            # 「下一頁」語意夠明確,整頁找也安全;「更多」這種泛用詞只信任
-            # 分頁標記元素內、且要求全字比對,避免整頁掃描誤中「更多推薦」。
-            if NEXT_CATALOG_PAGE_TEXT.match(text) or (
+            # 下一頁文字只有在附近 pager 容器或相同目錄網址模式中才採用,
+            # 避免把推薦區或文章列表的分頁混進小說目錄。
+            if (NEXT_CATALOG_PAGE_TEXT.match(text) and (
+                _is_pagination_marked(a) or _same_catalog_page_family(urljoin(url, a["href"]))
+            )) or (
                 LOOSE_MORE_PAGE_TEXT.match(text) and _is_pagination_marked(a)
             ):
                 nxt = _accept(a["href"])

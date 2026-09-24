@@ -233,7 +233,7 @@ def test_full_catalog_url_matches_bid_identifier_across_catalog_routes():
     <a href="/chapters.php?bid=456">全部章節</a>
     <a href="/chapters.php?bid=123">全部章節</a>
     '''
-    assert adapter.full_catalog_url(html, "https://example.test/book.php?bid=123") == (
+    assert adapter.full_catalog_url(html, "https://example.test/book.php?bid=123&sessionid=abc") == (
         "https://example.test/chapters.php?bid=123"
     )
 
@@ -241,6 +241,17 @@ def test_full_catalog_url_matches_bid_identifier_across_catalog_routes():
 def test_catalog_page_urls_next_page_link():
     adapter = GenericAdapter()
     html = '<div id="pager"><a href="/book/1/index_2.html">下一頁</a></div>'
+    assert adapter.catalog_page_urls(html, "https://example.test/book/1/index_1.html") == [
+        "https://example.test/book/1/index_2.html"
+    ]
+
+
+def test_catalog_page_urls_accepts_unmarked_next_page_only_in_same_catalog_family():
+    adapter = GenericAdapter()
+    html = '''
+    <div class="recommendations"><a href="/recommend/index_2.html">下一頁</a></div>
+    <a href="/book/1/index_2.html">下一頁</a>
+    '''
     assert adapter.catalog_page_urls(html, "https://example.test/book/1/index_1.html") == [
         "https://example.test/book/1/index_2.html"
     ]

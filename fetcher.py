@@ -155,7 +155,7 @@ class Fetcher:
 
                 if r.status_code == 200 and "Just a moment" not in text:
                     visible_text = TAG_RE.sub("", SCRIPT_STYLE_RE.sub("", text)).strip()
-                    if (len(text) < SOFT_BLOCK_MAX_LEN and SOFT_BLOCK_RE.search(text)
+                    if (len(text) < SOFT_BLOCK_MAX_LEN and SOFT_BLOCK_RE.search(visible_text)
                             and len(visible_text) < SOFT_BLOCK_MAX_VISIBLE):
                         # 200 但內容其實是「訪問過於頻繁」之類的軟封鎖頁:當限速處理,
                         # 絕不能把這種頁面當正文回傳(呼叫端會誤寫入快取)。

@@ -151,6 +151,15 @@ def test_soft_block_visible_text_ignores_inline_script_and_style(monkeypatch):
     assert len(fetcher.session.calls) == 2
 
 
+def test_soft_block_keyword_inside_script_does_not_reject_visible_chapter(monkeypatch):
+    html = "<script>const retry = '請稍後再試';</script><p>短章節正文。</p>"
+    fetcher = Fetcher()
+    fetcher.session = FakeSession([FakeResponse(html)])
+
+    assert fetcher.get("https://example.test/ch1") == html
+    assert len(fetcher.session.calls) == 1
+
+
 def test_soft_block_does_not_false_positive_on_short_real_content(monkeypatch):
     """單純字數少的正文不能被誤判成軟封鎖頁(必須同時命中關鍵字才算)。"""
     fetcher = Fetcher()
