@@ -6,7 +6,8 @@ import pytest
 from sites import get_adapter
 from sites.fanqie import (
     AccessVerificationRequired, FanqieAdapter, FanqieChapter, FanqieError,
-    chapter_cache_path, parse_book_id, parse_directory_response, save_raw_chapters,
+    chapter_cache_path, create_fetcher, parse_book_id, parse_directory_response,
+    save_raw_chapters,
 )
 
 
@@ -36,6 +37,13 @@ def test_parse_book_id_and_full_directory_order_statuses():
     assert chapters[0].access == "public_candidate"
     assert chapters[1].access == "unknown_locked"
     assert chapters[1].statuses["realChapterOrder"] == "202"
+
+
+def test_fetcher_uses_the_normal_mobile_reader_headers():
+    fetcher = create_fetcher(delay=0)
+    assert fetcher.extra_headers["ismobile"] == "1"
+    assert fetcher.extra_headers["Accept"] == "application/json, text/plain, */*"
+    assert "Android" in fetcher.extra_headers["User-Agent"]
 
 
 def test_directory_rejects_duplicate_ids_malformed_empty_and_count_order_mismatch():

@@ -150,7 +150,11 @@ def parse_directory_response(raw):
 
 
 def create_fetcher(delay=2.0, timeout=20):
-    return Fetcher(delay=delay, timeout=timeout, headers={"User-Agent": MOBILE_UA})
+    return Fetcher(delay=delay, timeout=timeout, headers={
+        "User-Agent": MOBILE_UA,
+        "Accept": "application/json, text/plain, */*",
+        "ismobile": "1",
+    })
 
 
 class FanqieAdapter(SiteAdapter):
