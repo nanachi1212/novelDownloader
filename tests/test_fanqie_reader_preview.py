@@ -733,6 +733,19 @@ def test_interleaved_stylesheets_keep_document_source_order(tmp_path):
     assert preview.paragraph_count == 2
 
 
+@pytest.mark.parametrize("element", [
+    '<style media="print">#reader-content {display:none}</style>',
+    '<link rel="stylesheet" href="chapter_files/reader.css" media="print">',
+    '<link rel="stylesheet" href="https://example.invalid/reader.css">',
+])
+def test_unresolved_stylesheet_conditions_fail_closed(tmp_path, element):
+    page = _saved_reader(tmp_path)
+    page.write_text(page.read_text(encoding="utf-8").replace("</head>", element + "</head>"),
+                    encoding="utf-8")
+    with pytest.raises(ReaderImportError, match="CSS"):
+        import_reader_html(page, "999", "101", "第一章", tmp_path / "preview")
+
+
 def test_unrelated_input_visibility_selector_does_not_block_import(tmp_path):
     page = _saved_reader(tmp_path)
     css = tmp_path / "chapter_files" / "reader.css"

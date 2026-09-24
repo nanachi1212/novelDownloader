@@ -64,13 +64,13 @@ def decode_chapter(text: str, preferred_mode: int | None = None) -> DecodeResult
     pua = [char for char in text if _is_pua(char)]
     if not pua:
         return DecodeResult(text, None, 0)
-    if len(pua) < 20:
-        if preferred_mode not in (0, 1):
-            raise DecodeFailed("DECODE_FAILED: too little PUA text to select a mapping mode")
+    if preferred_mode in (0, 1):
         decoded = decode_pua(text, preferred_mode)
         if any(_is_pua(char) for char in decoded):
             raise DecodeFailed("DECODE_FAILED: preferred mapping does not cover all PUA characters")
         return DecodeResult(decoded, preferred_mode, len(pua))
+    if len(pua) < 20:
+        raise DecodeFailed("DECODE_FAILED: too little PUA text to select a mapping mode")
     candidates = []
     for mode in (0, 1):
         mapped = decode_pua("".join(pua), mode)

@@ -156,6 +156,11 @@ def _extract_css(soup: BeautifulSoup, html_path: Path) -> list[str]:
     total_external_bytes = 0
     total_inline_bytes = 0
     for node in soup.find_all(["style", "link"]):
+        if node.name == "link" and "stylesheet" not in (node.get("rel") or []):
+            continue
+        media = (node.get("media") or "").strip().lower()
+        if media and media not in {"screen", "all"}:
+            raise ReaderImportError("保存頁面含有無法確認的 CSS media 條件。")
         if node.name == "style":
             block = node.string or node.get_text()
             total_inline_bytes += len(block.encode("utf-8"))
@@ -163,12 +168,10 @@ def _extract_css(soup: BeautifulSoup, html_path: Path) -> list[str]:
                 raise ReaderImportError("HTML 內嵌 CSS 超過允許大小。")
             blocks.append(block)
             continue
-        if "stylesheet" not in (node.get("rel") or []):
-            continue
         link = node
         href = (link.get("href") or "").strip()
-        if not href or urlparse(href).scheme or href.startswith(("//", "data:")):
-            continue
+        if not href or urlparse(href).scheme or href.startswith("//"):
+            raise ReaderImportError("保存頁面含有未保存的遠端 CSS。")
         try:
             css_path = _safe_source_file(Path(href.split("?", 1)[0].split("#", 1)[0]), root)
             _require_saved_asset(css_path, html_path)

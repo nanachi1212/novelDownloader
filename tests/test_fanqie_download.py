@@ -77,6 +77,9 @@ def test_fixed_tables_decode_only_known_private_use_positions():
             decode_chapter(char * 30)
         with pytest.raises(DecodeFailed, match="DECODE_FAILED"):
             decode_chapter(char, preferred_mode=0)
+    ambiguous = "\ue3eb" * 20
+    assert decode_chapter(ambiguous, preferred_mode=0).text == decode_pua(ambiguous, 0)
+    assert decode_chapter(ambiguous, preferred_mode=1).text == decode_pua(ambiguous, 1)
 
 
 def test_reader_paragraph_breaks_survive_html_flattening():
