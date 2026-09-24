@@ -625,6 +625,33 @@ def test_inert_reader_paragraphs_and_inline_text_are_not_published(tmp_path):
         assert hidden not in document
 
 
+@pytest.mark.parametrize("declaration", ["display:none", "visibility:hidden"])
+def test_stylesheet_hidden_gate_and_reader_text_are_ignored(tmp_path, declaration):
+    page = _saved_reader(tmp_path)
+    css = tmp_path / "chapter_files" / "reader.css"
+    css.write_text(css.read_text(encoding="utf-8") + f".hidden {{{declaration}}}", encoding="utf-8")
+    source = page.read_text(encoding="utf-8").replace(
+        "<p>第二段", '<div class="hidden"><p>购买本章</p></div>'
+        '<p>第二段<span class="hidden">隱藏字</span>')
+    source = source.replace("</body>", '<div id="login-dialog" class="hidden"></div></body>')
+    page.write_text(source, encoding="utf-8")
+    preview = import_reader_html(page, "999", "101", "第一章", tmp_path / "preview")
+    document = preview.preview_path.read_text(encoding="utf-8")
+    assert preview.paragraph_count == 2
+    assert "购买本章" not in document and "隱藏字" not in document
+
+
+def test_stylesheet_visible_override_keeps_gate_active(tmp_path):
+    page = _saved_reader(tmp_path)
+    css = tmp_path / "chapter_files" / "reader.css"
+    css.write_text(css.read_text(encoding="utf-8")
+                   + ".hidden {display:none} #login-dialog {display:block}", encoding="utf-8")
+    page.write_text(page.read_text(encoding="utf-8").replace(
+        "</body>", '<div id="login-dialog" class="hidden"></div></body>'), encoding="utf-8")
+    with pytest.raises(ReaderImportError, match="人機驗證要求"):
+        import_reader_html(page, "999", "101", "第一章", tmp_path / "preview")
+
+
 def test_reader_body_containing_only_gate_notice_is_rejected(tmp_path):
     page = _saved_reader(tmp_path)
     source = page.read_text(encoding="utf-8")

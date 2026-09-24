@@ -393,6 +393,7 @@ def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
     """
     callback = callback or (lambda *a: None)
     adapter = get_adapter(url)
+    request_headers = {**adapter.default_request_headers(), **(request_headers or {})}
     fetcher = Fetcher(encoding=adapter.encoding, delay=delay, headers=request_headers, timeout=timeout)
     request_retries = min(retries, getattr(adapter, "max_request_retries", retries))
 

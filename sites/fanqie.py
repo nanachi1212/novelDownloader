@@ -225,11 +225,8 @@ def parse_directory_response(raw):
 
 
 def create_fetcher(delay=2.0, timeout=20):
-    return Fetcher(delay=delay, timeout=timeout, headers={
-        "User-Agent": MOBILE_UA,
-        "Accept": "application/json, text/plain, */*",
-        "ismobile": "1",
-    })
+    return Fetcher(delay=delay, timeout=timeout,
+                   headers=FanqieAdapter().default_request_headers())
 
 
 class FanqieAdapter(SiteAdapter):
@@ -237,6 +234,11 @@ class FanqieAdapter(SiteAdapter):
     max_chapter_workers = 1
     max_request_retries = 1
     require_complete_chapters = True
+
+    def default_request_headers(self):
+        return {"User-Agent": MOBILE_UA,
+                "Accept": "application/json, text/plain, */*",
+                "ismobile": "1"}
 
     def book_id(self, url):
         return parse_book_id(url)

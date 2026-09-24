@@ -21,6 +21,10 @@ class SiteAdapter:
     encoding: str = "utf-8"
     max_chapter_workers: int = 8  # 受 Session／反爬限制的網站可降為 1
 
+    def default_request_headers(self) -> dict[str, str]:
+        """Site-specific public request headers; callers may override them."""
+        return {}
+
     def catalog_url(self, url: str) -> str:
         """把使用者貼的網址(簡介頁/目錄頁)正規化成目錄頁網址。"""
         return url

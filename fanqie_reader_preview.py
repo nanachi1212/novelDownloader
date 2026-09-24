@@ -220,10 +220,10 @@ def _separate_conditional_css(css_blocks: list[str]) -> tuple[list[str], list[st
 
 
 def _conditional_font_affects_reader(conditional: list[str], reader_node: Tag,
-                                     family: str) -> bool:
+                                     family: str, visibility_rules=()) -> bool:
     nodes = [reader_node, *(node for node in reader_node.parents if isinstance(node, Tag)),
              *(node for node in reader_node.descendants
-               if isinstance(node, Tag) and not _is_inert_node(node))]
+               if isinstance(node, Tag) and not _is_inert_node(node, visibility_rules))]
     for block in conditional:
         for face in FONT_FACE_RE.findall(block):
             declared = FAMILY_RE.search(face)
@@ -239,18 +239,20 @@ def _conditional_font_affects_reader(conditional: list[str], reader_node: Tag,
     return False
 
 
-def _is_inert_node(node: Tag) -> bool:
+def _is_inert_node(node: Tag, visibility_rules=()) -> bool:
     return any(
         ancestor.name in {"script", "style", "template", "noscript"}
         or ancestor.has_attr("hidden") or ancestor.has_attr("inert")
         or ancestor.get("aria-hidden") == "true"
         or bool(re.search(r"(?:display\s*:\s*none|visibility\s*:\s*hidden)",
                           ancestor.get("style", ""), re.I))
+        or (_css_visibility_value(ancestor, visibility_rules, "display") == "none")
+        or (_css_visibility_value(ancestor, visibility_rules, "visibility") == "hidden")
         for ancestor in (node, *node.parents) if isinstance(ancestor, Tag)
     )
 
 
-def _reader_body(soup: BeautifulSoup):
+def _reader_body(soup: BeautifulSoup, visibility_rules=()):
     selectors = (
         "#reader-content", "#readerContent", ".muye-reader-content",
         "[class*='reader-content']", "[class*='readerContent']",
@@ -258,19 +260,20 @@ def _reader_body(soup: BeautifulSoup):
     for selector in selectors:
         node = soup.select_one(selector)
         if node:
-            paragraphs = [p for p in node.find_all("p") if not _is_inert_node(p) and p.get_text()]
+            paragraphs = [p for p in node.find_all("p")
+                          if not _is_inert_node(p, visibility_rules) and p.get_text()]
             if paragraphs:
                 return node, paragraphs
     raise ReaderImportError("保存頁面找不到含正文段落的閱讀器區塊，沒有匯入任何資料。")
 
 
-def _has_gate_ui(soup: BeautifulSoup, paragraphs: list[str]) -> bool:
+def _has_gate_ui(soup: BeautifulSoup, paragraphs: list[str], visibility_rules=()) -> bool:
     """Recognize an actual gate widget or a reader body consisting of a gate notice."""
     for meta in soup.find_all("meta"):
         if (meta.get("name") or "").lower() == "x-vc-bdturing-parameters":
             return True
     for node in soup.find_all(True):
-        if _is_inert_node(node):
+        if _is_inert_node(node, visibility_rules):
             continue
         identifiers = [node.get("id", ""), *(node.get("class") or [])]
         if any(value.lower() in GATE_UI_IDS for value in identifiers if isinstance(value, str)):
@@ -379,6 +382,7 @@ def _first_family(match) -> str:
 
 
 FONT_ATTRIBUTE_RE = re.compile(r"(?<![\w-])(font-family|font-weight|font-style|font)\s*:\s*([^;]+)", re.I)
+VISIBILITY_RE = re.compile(r"(?:^|;)\s*(display|visibility)\s*:\s*([^;]+)", re.I)
 FONT_SIZE_RE = re.compile(
     r"^(?:\d+(?:\.\d+)?(?:px|pt|em|rem|%)|xx-small|x-small|small|medium|large|x-large|xx-large)(?:/\S+)?$",
     re.I,
@@ -433,6 +437,54 @@ def _selector_specificity(selector: str) -> tuple[int, int, int, int]:
     parts = selector.strip().split()
     return (0, selector.count("#"), selector.count("."),
             sum(bool(re.match(r"^[A-Za-z][\w-]*", part)) for part in parts))
+
+
+class _VisibilityRules(list):
+    def __init__(self):
+        super().__init__()
+        self.cache = {}
+
+
+def _visibility_rules(css_blocks: list[str]) -> _VisibilityRules:
+    rules = _VisibilityRules()
+    for block in css_blocks:
+        for selector_text, declarations in CSS_RULE_RE.findall(block):
+            if selector_text.lstrip().startswith("@"):
+                continue
+            for match in VISIBILITY_RE.finditer(declarations):
+                raw = match.group(2).strip()
+                important = bool(re.search(r"!important\s*$", raw, re.I))
+                value = re.sub(r"\s*!important\s*$", "", raw, flags=re.I).strip().lower()
+                rules.append((selector_text.split(","), match.group(1).lower(),
+                              value, important, len(rules)))
+    return rules
+
+
+def _css_visibility_value(node: Tag, rules, name: str) -> str:
+    key = (id(node), name)
+    if isinstance(rules, _VisibilityRules) and key in rules.cache:
+        return rules.cache[key]
+    candidates = []
+    for selectors, property_name, value, important, order in rules:
+        if property_name != name:
+            continue
+        specificity = max((_selector_specificity(selector) for selector in selectors
+                           if "::" not in selector and not re.search(
+                               r"(?<!:):(?:before|after|first-line|first-letter)\b", selector, re.I)
+                           if _selector_matches(selector, node)), default=None)
+        if specificity is not None:
+            candidates.append(((int(important), specificity, order), value))
+    for order, match in enumerate(VISIBILITY_RE.finditer(node.get("style", ""))):
+        if match.group(1).lower() != name:
+            continue
+        raw = match.group(2).strip()
+        important = bool(re.search(r"!important\s*$", raw, re.I))
+        value = re.sub(r"\s*!important\s*$", "", raw, flags=re.I).strip().lower()
+        candidates.append(((int(important), (1, 0, 0, 0), len(rules) + order), value))
+    result = max(candidates, key=lambda candidate: candidate[0])[1] if candidates else ""
+    if isinstance(rules, _VisibilityRules):
+        rules.cache[key] = result
+    return result
 
 
 def _declared_font_attribute(node, rules: list[tuple[list[str], str, str, bool, int]], name: str) -> str:
@@ -558,7 +610,7 @@ def _font_resource(css_blocks: list[str], family: str, weight: int, style: str,
     raise ReaderImportError("找不到正文實際使用字型的本機字型檔；原始資料未更動。")
 
 
-def _paragraph_text(node) -> list[str]:
+def _paragraph_text(node, visibility_rules=()) -> list[str]:
     paragraphs = []
 
     def append_text(source, output):
@@ -568,7 +620,7 @@ def _paragraph_text(node) -> list[str]:
             if isinstance(child, NavigableString):
                 output.append(str(child))
             elif isinstance(child, Tag):
-                if child.name in {"script", "style", "iframe", "object"} or _is_inert_node(child):
+                if child.name in {"script", "style", "iframe", "object"} or _is_inert_node(child, visibility_rules):
                     continue
                 if child.name == "br":
                     output.append("\n")
@@ -576,7 +628,7 @@ def _paragraph_text(node) -> list[str]:
                     append_text(child, output)
 
     for p in node.find_all("p"):
-        if _is_inert_node(p):
+        if _is_inert_node(p, visibility_rules):
             continue
         pieces = []
         append_text(p, pieces)
@@ -673,13 +725,14 @@ def import_reader_html(source_path, book_id: str, item_id: str, title: str, prev
     # notice be misidentified as another encoding by byte-level heuristics.
     soup = BeautifulSoup(raw, "html.parser", from_encoding="utf-8")
     _validate_identity(soup, str(book_id), str(item_id))
-    content_node, paragraph_nodes = _reader_body(soup)
-    paragraphs = _paragraph_text(content_node)
+    css, conditional_css = _separate_conditional_css(_extract_css(soup, source_path))
+    visibility_rules = _visibility_rules(css)
+    content_node, paragraph_nodes = _reader_body(soup, visibility_rules)
+    paragraphs = _paragraph_text(content_node, visibility_rules)
     if not paragraphs:
         raise ReaderImportError("閱讀器區塊沒有可保存的正文段落。")
-    if _has_gate_ui(soup, paragraphs):
+    if _has_gate_ui(soup, paragraphs, visibility_rules):
         raise ReaderImportError("保存頁面含登入、購買或人機驗證要求，未將其當作正文保存。")
-    css, conditional_css = _separate_conditional_css(_extract_css(soup, source_path))
     family_rules = _font_attribute_rules(css, "font-family")
     family = _effective_font_attribute(content_node, family_rules, "font-family", "")
     paragraph_families = {
@@ -698,7 +751,7 @@ def import_reader_html(source_path, book_id: str, item_id: str, title: str, prev
         raise ReaderImportError("無法確認正文實際使用的字型，無法宣稱字型閱讀預覽可用。")
     if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{0,63}", family):
         raise ReaderImportError("正文字型名稱含不安全字元，無法建立預覽。")
-    if _conditional_font_affects_reader(conditional_css, content_node, family):
+    if _conditional_font_affects_reader(conditional_css, content_node, family, visibility_rules):
         raise ReaderImportError("正文或其字型有條件式 CSS 規則，無法安全確認實際字型。")
     weight_rules = _font_attribute_rules(css, "font-weight")
     style_rules = _font_attribute_rules(css, "font-style")
@@ -712,7 +765,7 @@ def import_reader_html(source_path, book_id: str, item_id: str, title: str, prev
     style = next(iter(paragraph_styles))
     for paragraph in paragraph_nodes:
         for descendant in paragraph.descendants:
-            if (not isinstance(descendant, Tag) or _is_inert_node(descendant)
+            if (not isinstance(descendant, Tag) or _is_inert_node(descendant, visibility_rules)
                     or not any(isinstance(child, NavigableString) and str(child).strip()
                                for child in descendant.children)):
                 continue

@@ -135,14 +135,16 @@ def test_non_public_access_status_never_exports_chapter(status):
 
 def test_fanqie_txt_epub_resume_and_challenge_never_cached(tmp_path, monkeypatch):
     calls = []
+    supplied_headers = []
     response = [_reader()]
     reader_headers = [{}]
     reader_forbidden = [False]
 
     class FakeFetcher:
-        def __init__(self, **_kwargs):
+        def __init__(self, **kwargs):
             self.last_response_headers = {}
             self.last_status_code = 200
+            supplied_headers.append(kwargs["headers"])
 
         def get(self, url, **_kwargs):
             calls.append(url)
@@ -200,6 +202,12 @@ def test_fanqie_txt_epub_resume_and_challenge_never_cached(tmp_path, monkeypatch
         assert "人在这里" in archive.read("OEBPS/chapter1.xhtml").decode("utf-8")
     assert calls.count(READER_URL) == chapter_calls
     assert "\ue3e8" not in chapter_cache.read_text(encoding="utf-8")
+    assert supplied_headers[0]["ismobile"] == "1"
+    assert "Mobile" in supplied_headers[0]["User-Agent"]
+    downloader_task.download_novel(BOOK_URL, tmp_path / "out", delay=0, retries=1,
+                                   end=1, request_headers={"Accept": "custom/type"})
+    assert supplied_headers[-1]["Accept"] == "custom/type"
+    assert supplied_headers[-1]["ismobile"] == "1"
 
 
 def test_same_count_directory_reorder_reuses_only_matching_item_ids(tmp_path, monkeypatch):
