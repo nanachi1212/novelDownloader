@@ -806,6 +806,35 @@ def test_local_font_source_fails_closed(tmp_path):
         import_reader_html(page, "999", "101", "第一章", tmp_path / "preview")
 
 
+def test_missing_preferred_remote_font_does_not_use_later_fallback(tmp_path):
+    page = _saved_reader(tmp_path)
+    css = tmp_path / "chapter_files" / "reader.css"
+    css.write_text(css.read_text(encoding="utf-8").replace(
+        "url('font.woff2') format('woff2')",
+        "url('https://lf6-awef.bytetos.com/obj/awesome-font/c/abcdef123456.woff2') "
+        "format('woff2'), url('font.woff2') format('woff2')"), encoding="utf-8")
+    with pytest.raises(ReaderImportError, match="沒有同名字型檔"):
+        import_reader_html(page, "999", "101", "第一章", tmp_path / "preview")
+
+
+def test_symlinked_book_folder_cannot_redirect_preview_writes(tmp_path):
+    page = _saved_reader(tmp_path)
+    preview_root = tmp_path / "preview"
+    preview_root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    original = outside / "101" / "source.html"
+    original.parent.mkdir()
+    original.write_text("original", encoding="utf-8")
+    try:
+        (preview_root / "999").symlink_to(outside, target_is_directory=True)
+    except OSError:
+        pytest.skip("此 Windows 環境不允許建立測試用符號連結")
+    with pytest.raises(ReaderImportError, match="符號連結"):
+        import_reader_html(page, "999", "101", "第一章", preview_root)
+    assert original.read_text(encoding="utf-8") == "original"
+
+
 @pytest.mark.parametrize("tag", [
     '<style title="A">#reader-content {display:none}</style>',
     '<link rel="stylesheet" title="B" href="chapter_files/reader.css">',

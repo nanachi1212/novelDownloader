@@ -682,7 +682,6 @@ def _check_font_source_format(suffix: str, declared_format: str | None) -> None:
 def _font_resource(css_blocks: list[str], family: str, weight: int, style: str,
                    html_path: Path) -> tuple[bytes, str]:
     root = html_path.parent
-    remote_font_missing = False
     faces = [face for block in css_blocks for face in FONT_FACE_RE.findall(block)
              if _font_family_value(_face_descriptor(face, "font-family")) == family]
 
@@ -727,8 +726,8 @@ def _font_resource(css_blocks: list[str], family: str, weight: int, style: str,
                     raise ReaderImportError("字型來源檔名無效。")
                 local = Path(f"{html_path.stem}_files") / name
                 if not (root / local).exists():
-                    remote_font_missing = True
-                    continue
+                    raise ReaderImportError(
+                        "此字型仍是遠端資源，保存的 _files 資料夾沒有同名字型檔；原始資料未更動。")
                 path = _safe_source_file(local, root)
             else:
                 path = _safe_source_file(Path(uri.split("?", 1)[0].split("#", 1)[0]), root)
@@ -741,9 +740,19 @@ def _font_resource(css_blocks: list[str], family: str, weight: int, style: str,
             if not _font_signature(data, suffix):
                 raise ReaderImportError("字型檔案內容與副檔名不符。")
             return data, suffix
-    if remote_font_missing:
-        raise ReaderImportError("此字型仍是遠端資源，保存的 _files 資料夾沒有同名字型檔；原始資料未更動。")
     raise ReaderImportError("找不到正文實際使用字型的本機字型檔；原始資料未更動。")
+
+
+def _preview_destination(preview_root, book_id: str, item_id: str) -> Path:
+    base = Path(preview_root)
+    book_folder = base / book_id
+    chapter_folder = book_folder / item_id
+    real_base = base.resolve()
+    if (book_folder.is_symlink() or chapter_folder.is_symlink()
+            or not book_folder.resolve().is_relative_to(real_base)
+            or not chapter_folder.resolve().is_relative_to(real_base)):
+        raise ReaderImportError("Preview 目的路徑含符號連結或超出資料目錄，未寫入。")
+    return chapter_folder
 
 
 def _paragraph_text(node, visibility_rules=()) -> list[str]:
@@ -921,12 +930,11 @@ def import_reader_html(source_path, book_id: str, item_id: str, title: str, prev
                 raise ReaderImportError("章節段落內使用不同字型、字重或樣式，無法安全建立單一字型預覽。")
     font_bytes, suffix = _font_resource(css, family, weight, style, source_path)
     digest = hashlib.sha256(font_bytes).hexdigest()
-    root = Path(preview_root) / str(book_id) / str(item_id)
-    if root.is_symlink():
-        raise ReaderImportError("章節資料夾是符號連結，不能安全重新匯入。")
+    root = _preview_destination(preview_root, str(book_id), str(item_id))
     if root.exists() and reading_preview_status(preview_root, str(book_id), str(item_id))[0]:
         raise ReaderImportError("此書籍／章節已有匯入資料；為保留原始資料，本次不覆寫。")
     root.parent.mkdir(parents=True, exist_ok=True)
+    _preview_destination(preview_root, str(book_id), str(item_id))
     stage = _make_import_stage(root.parent, str(item_id))
     fonts = stage / "fonts"
     fonts.mkdir()
@@ -969,12 +977,14 @@ def import_reader_html(source_path, book_id: str, item_id: str, title: str, prev
         # Keep a broken earlier import intact under a unique sibling name.
         previous_path = None
         if root.exists():
-            if root.is_symlink() or reading_preview_status(preview_root, str(book_id), str(item_id))[0]:
+            _preview_destination(preview_root, str(book_id), str(item_id))
+            if reading_preview_status(preview_root, str(book_id), str(item_id))[0]:
                 raise ReaderImportError("此書籍／章節已有可用資料，本次不覆寫。")
             previous_path = root.parent / f"{item_id}-previous-{secrets.token_hex(16)}"
             os.rename(root, previous_path)
         try:
             # Publish the complete chapter folder in one same-volume rename.
+            _preview_destination(preview_root, str(book_id), str(item_id))
             os.rename(stage, root)
         except Exception:
             if previous_path is not None:
