@@ -268,12 +268,10 @@ def fetch_parsed_chapter(fetcher, adapter, chapter, retries: int, on_retry=None)
             seen = {chapter.url}
 
             def fetch_one(page_url, referer=None):
-                html = fetcher.get(page_url, referer=referer, retries=1)
-                adapter.validate_response(fetcher)
+                html = _fetch_checked(fetcher, adapter, page_url, referer=referer, retries=1)
                 source_url = adapter.chapter_source_url(html, page_url)
                 if source_url:
-                    html = fetcher.get(source_url, referer=page_url, retries=1)
-                    adapter.validate_response(fetcher)
+                    html = _fetch_checked(fetcher, adapter, source_url, referer=page_url, retries=1)
                 parsed = adapter.parse_chapter(html, title=chapter.title)
                 if not isinstance(parsed, str) or not parsed.strip():
                     raise ValueError(f"章節分頁正文為空: {page_url}")
@@ -308,6 +306,17 @@ def fetch_parsed_chapter(fetcher, adapter, chapter, retries: int, on_retry=None)
         except (FetchError, ValueError) as e:
             last_err = e
     raise last_err
+
+
+def _fetch_checked(fetcher, adapter, url, **kwargs):
+    """Inspect a site's gate headers/status even when Fetcher raises first."""
+    try:
+        response = fetcher.get(url, **kwargs)
+    except FetchError:
+        adapter.validate_response(fetcher)
+        raise
+    adapter.validate_response(fetcher)
+    return response
 
 
 def write_epub(path: Path, title: str, author: str, source: str, chapters, transform=None):
@@ -385,19 +394,18 @@ def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
     callback = callback or (lambda *a: None)
     adapter = get_adapter(url)
     fetcher = Fetcher(encoding=adapter.encoding, delay=delay, headers=request_headers, timeout=timeout)
+    request_retries = min(retries, getattr(adapter, "max_request_retries", retries))
 
     callback("catalog", 0, 1, "正在抓取目錄...")
     catalog_url = adapter.catalog_url(url)
     meta_url = adapter.meta_url(url)
     if meta_url:
-        meta_html = fetcher.get(meta_url, retries=retries)
-        adapter.validate_response(fetcher)
+        meta_html = _fetch_checked(fetcher, adapter, meta_url, retries=request_retries)
         title, author = adapter.parse_meta(meta_html)
     else:
         title = author = ""
 
-    catalog_html = fetcher.get(catalog_url, retries=retries)
-    adapter.validate_response(fetcher)
+    catalog_html = _fetch_checked(fetcher, adapter, catalog_url, retries=request_retries)
     full_url = adapter.full_catalog_url(catalog_html, catalog_url)
     collapsed_metadata = None
     if full_url and full_url != catalog_url:
@@ -406,8 +414,7 @@ def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
         callback("catalog", 0, 1, "[目錄] 已展開完整目錄")
         catalog_url = full_url
         fetcher.polite_sleep()
-        catalog_html = fetcher.get(catalog_url, retries=retries)
-        adapter.validate_response(fetcher)
+        catalog_html = _fetch_checked(fetcher, adapter, catalog_url, retries=request_retries)
 
     # 用 parse_catalog_page 而非 parse_catalog:展開完整目錄後,GenericAdapter
     # 需要知道實際抓到的是哪個網址,才能正確解析頁面上的相對連結
@@ -441,8 +448,7 @@ def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
         visited_pages.add(next_url)
         pages_fetched += 1
         fetcher.polite_sleep()
-        next_html = fetcher.get(next_url, retries=retries)
-        adapter.validate_response(fetcher)
+        next_html = _fetch_checked(fetcher, adapter, next_url, retries=request_retries)
         extra = adapter.parse_catalog_page(next_html, next_url)
         new_chapters = [c for c in extra.chapters if c.url not in seen_chapter_urls]
         if new_chapters:

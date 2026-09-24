@@ -50,6 +50,8 @@ class FanqieChapter:
         paid_keys = ("needPay", "isPaidPublication", "isPaidStory", "isPay", "isVip")
         if any(_truthy(self.statuses.get(key)) for key in paid_keys):
             return "restricted"
+        if _response_access_status(self.statuses):
+            return "unknown_locked"
         for key, value in self.statuses.items():
             lowered = str(key).lower()
             if _truthy(value) and any(marker in lowered for marker in ("pay", "vip", "member", "purchase")):
@@ -90,9 +92,9 @@ def _response_access_status(data):
             )
             if _truthy(value) and gate_key:
                 return "存取狀態未明"
-        status = str(source.get("accessStatus") or source.get("access_status") or "").lower()
-        if any(word in status for word in ("pay", "lock", "restrict", "login", "verify", "auth", "denied", "forbidden")):
-            return "存取狀態未明"
+        for key in ("accessStatus", "access_status"):
+            if key in source and str(source[key]).strip().lower() not in {"public", "free", "unlocked"}:
+                return "存取狀態未明"
     return ""
 
 
@@ -231,6 +233,7 @@ def create_fetcher(delay=2.0, timeout=20):
 class FanqieAdapter(SiteAdapter):
     domains = ["fanqienovel.com", "www.fanqienovel.com"]
     max_chapter_workers = 1
+    max_request_retries = 1
     require_complete_chapters = True
 
     def book_id(self, url):
@@ -265,9 +268,10 @@ class FanqieAdapter(SiteAdapter):
         return self._book_title, self._book_author
 
     def validate_download_chapter(self, chapter):
-        match = re.fullmatch(r"https://fanqienovel\.com/reader/(\d+)", chapter.url)
-        if not match or getattr(self, "_chapter_access", {}).get(match.group(1)) != "public_candidate":
-            raise AccessVerificationRequired("所選番茄章節的目錄存取旗標不是明確公開，已停止下載。")
+        for url in [chapter.url, *chapter.extra_urls]:
+            match = re.fullmatch(r"https://fanqienovel\.com/reader/(\d+)", url)
+            if not match or getattr(self, "_chapter_access", {}).get(match.group(1)) != "public_candidate":
+                raise AccessVerificationRequired("所選番茄章節的目錄存取旗標不是明確公開，已停止下載。")
 
     def chapter_source_url(self, html, url):
         match = re.fullmatch(r"https://fanqienovel\.com/reader/(\d+)", url)

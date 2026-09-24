@@ -15,6 +15,7 @@ from pathlib import Path
 from urllib.parse import unquote, urlparse
 
 from bs4 import BeautifulSoup, Comment, NavigableString, Tag
+from soupsieve import SelectorSyntaxError, match as css_selector_matches
 
 from app_paths import write_json
 
@@ -314,7 +315,20 @@ def _validate_identity(soup: BeautifulSoup, book_id: str, item_id: str) -> None:
 
 def _selector_matches(selector: str, node) -> bool:
     selector = selector.strip()
-    if not selector or any(mark in selector for mark in (":", ">", "+", "~", "[")):
+    if not selector:
+        return False
+    parts = selector.split()
+    if (any(mark in selector for mark in (":", ">", "+", "~", "["))
+            or not all(re.fullmatch(r"(?:[a-zA-Z][\w-]*|\*|#[\w-]+|\.[\w-])+", part)
+                       for part in parts)):
+        try:
+            if css_selector_matches(selector, node):
+                raise ReaderImportError("正文命中不支援的 CSS 字型選擇器，未建立預覽。")
+        except (SelectorSyntaxError, NotImplementedError) as exc:
+            # Browser file-upload controls are never reader paragraphs.
+            if selector == "::-webkit-file-upload-button":
+                return False
+            raise ReaderImportError("無法確認 CSS 字型選擇器是否套用正文，未建立預覽。") from exc
         return False
 
     def matches(part, candidate):
@@ -329,7 +343,6 @@ def _selector_matches(selector: str, node) -> bool:
         classes = re.findall(r"\.([\w-]+)", part)
         return all(name in (candidate.get("class") or []) for name in classes)
 
-    parts = selector.split()
     current = node
     if not matches(parts[-1], current):
         return False

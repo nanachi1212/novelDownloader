@@ -6,6 +6,7 @@ import pytest
 
 import downloader_task
 from fanqie_decoder import CHARSETS, DecodeFailed, decode_chapter, decode_pua
+from fetcher import FetchError
 from sites.fanqie import AccessVerificationRequired, FanqieAdapter, FanqieError
 
 
@@ -82,8 +83,14 @@ def test_directory_becomes_ordered_bookinfo_and_fails_closed():
     adapter.validate_download_chapter(book.chapters[0])
     with pytest.raises(AccessVerificationRequired):
         adapter.validate_download_chapter(book.chapters[1])
+    book.chapters[0].extra_urls.append(book.chapters[1].url)
+    with pytest.raises(AccessVerificationRequired):
+        adapter.validate_download_chapter(book.chapters[0])
     with pytest.raises(FanqieError):
         adapter.parse_meta(_meta("wrong"))
+    paid_directory = adapter.parse_catalog(_directory(_item(accessStatus="paid", **PUBLIC)))
+    with pytest.raises(AccessVerificationRequired):
+        adapter.validate_download_chapter(paid_directory.chapters[0])
 
 
 def test_initial_state_content_identity_access_and_challenge():
@@ -117,10 +124,20 @@ def test_shortened_reader_body_is_rejected():
         adapter.parse_chapter(html)
 
 
+@pytest.mark.parametrize("status", ["paid", "vip", "unknown-state", 0])
+def test_non_public_access_status_never_exports_chapter(status):
+    adapter = _adapter()
+    adapter.chapter_source_url("", READER_URL)
+    html = _reader().replace('"content":', f'"accessStatus":{json.dumps(status)},"content":')
+    with pytest.raises(AccessVerificationRequired):
+        adapter.parse_chapter(html)
+
+
 def test_fanqie_txt_epub_resume_and_challenge_never_cached(tmp_path, monkeypatch):
     calls = []
     response = [_reader()]
     reader_headers = [{}]
+    reader_forbidden = [False]
 
     class FakeFetcher:
         def __init__(self, **_kwargs):
@@ -130,6 +147,10 @@ def test_fanqie_txt_epub_resume_and_challenge_never_cached(tmp_path, monkeypatch
         def get(self, url, **_kwargs):
             calls.append(url)
             self.last_response_headers = reader_headers[0] if url == READER_URL else {}
+            self.last_status_code = 200
+            if url == READER_URL and reader_forbidden[0]:
+                self.last_status_code = 403
+                raise FetchError("HTTP 403")
             if "/api/reader/directory/detail" in url:
                 return _directory(_item())
             if "/page/" in url:
@@ -155,6 +176,13 @@ def test_fanqie_txt_epub_resume_and_challenge_never_cached(tmp_path, monkeypatch
         downloader_task.download_novel(BOOK_URL, tmp_path / "out", delay=0, retries=1, end=1)
     assert not chapter_cache.exists()
     reader_headers[0] = {}
+    reader_forbidden[0] = True
+    before_forbidden = calls.count(READER_URL)
+    with pytest.raises(AccessVerificationRequired):
+        downloader_task.download_novel(BOOK_URL, tmp_path / "out", delay=0, retries=3, end=1)
+    assert calls.count(READER_URL) == before_forbidden + 1
+    assert not chapter_cache.exists()
+    reader_forbidden[0] = False
     response[0] = _reader(content="<p>" + "\uf000" * 30 + "</p>")
     with pytest.raises(DecodeFailed, match="DECODE_FAILED"):
         downloader_task.download_novel(BOOK_URL, tmp_path / "out", delay=0, retries=1, end=1)

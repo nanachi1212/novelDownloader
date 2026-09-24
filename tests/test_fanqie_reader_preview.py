@@ -458,6 +458,27 @@ def test_unrelated_conditional_font_rule_does_not_override_reader(tmp_path):
     assert preview.font_sha256 == hashlib.sha256(FONT_BYTES).hexdigest()
 
 
+@pytest.mark.parametrize("selector", ["#reader-content > p", "#reader-content p[data-kind]"])
+def test_matching_unsupported_font_selector_fails_closed(tmp_path, selector):
+    page = _saved_reader(tmp_path)
+    source = page.read_text(encoding="utf-8").replace("<p>", '<p data-kind="body">')
+    page.write_text(source, encoding="utf-8")
+    css = tmp_path / "chapter_files" / "reader.css"
+    css.write_text(css.read_text(encoding="utf-8") + f"{selector} {{font-weight:500;}}",
+                   encoding="utf-8")
+    with pytest.raises(ReaderImportError, match="CSS 字型選擇器"):
+        import_reader_html(page, "999", "101", "第一章", tmp_path / "preview")
+
+
+def test_unrelated_unsupported_font_selector_does_not_block_reader(tmp_path):
+    page = _saved_reader(tmp_path)
+    css = tmp_path / "chapter_files" / "reader.css"
+    css.write_text(css.read_text(encoding="utf-8") + ".unrelated > p {font-weight:500;}",
+                   encoding="utf-8")
+    preview = import_reader_html(page, "999", "101", "第一章", tmp_path / "preview")
+    assert preview.font_sha256 == hashlib.sha256(FONT_BYTES).hexdigest()
+
+
 def test_import_rejects_font_family_that_could_break_generated_style(tmp_path):
     page = _saved_reader(tmp_path, family="MappedFont</style>")
     with pytest.raises(ReaderImportError, match="不安全字元"):
