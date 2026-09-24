@@ -43,6 +43,7 @@ class ReaderPreview:
     font_family: str
     font_sha256: str
     paragraph_count: int
+    previous_path: Path | None = None
 
 
 def reading_preview_status(preview_root, book_id: str, item_id: str) -> tuple[bool, str]:
@@ -169,7 +170,9 @@ def _has_gate_ui(soup: BeautifulSoup, paragraphs: list[str]) -> bool:
         if (meta.get("name") or "").lower() == "x-vc-bdturing-parameters":
             return True
     for node in soup.find_all(True):
-        if node.name in {"script", "style", "template"}:
+        if any(ancestor.name in {"script", "style", "template", "noscript"}
+               or ancestor.has_attr("hidden") or ancestor.get("aria-hidden") == "true"
+               for ancestor in (node, *node.parents) if isinstance(ancestor, Tag)):
             continue
         identifiers = [node.get("id", ""), *(node.get("class") or [])]
         if any(value.lower() in GATE_UI_IDS for value in identifiers if isinstance(value, str)):
@@ -479,7 +482,9 @@ def import_reader_html(source_path, book_id: str, item_id: str, title: str, prev
     font_bytes, suffix = _font_resource(css, family, source_path)
     digest = hashlib.sha256(font_bytes).hexdigest()
     root = Path(preview_root) / str(book_id) / str(item_id)
-    if root.exists():
+    if root.is_symlink():
+        raise ReaderImportError("章節資料夾是符號連結，不能安全重新匯入。")
+    if root.exists() and reading_preview_status(preview_root, str(book_id), str(item_id))[0]:
         raise ReaderImportError("此書籍／章節已有匯入資料；為保留原始資料，本次不覆寫。")
     root.parent.mkdir(parents=True, exist_ok=True)
     stage = _make_import_stage(root.parent, str(item_id))
@@ -515,10 +520,25 @@ def import_reader_html(source_path, book_id: str, item_id: str, title: str, prev
             "font_family": family, "font_sha256": digest,
             "paragraph_count": len(paragraphs), "text_restored": False,
         })
-        # Publish the complete chapter folder in one same-volume rename.
-        os.rename(stage, root)
+        # Keep a broken earlier import intact under a unique sibling name.
+        previous_path = None
+        if root.exists():
+            if root.is_symlink() or reading_preview_status(preview_root, str(book_id), str(item_id))[0]:
+                raise ReaderImportError("此書籍／章節已有可用資料，本次不覆寫。")
+            previous_path = root.parent / f"{item_id}-previous-{secrets.token_hex(16)}"
+            os.rename(root, previous_path)
+        try:
+            # Publish the complete chapter folder in one same-volume rename.
+            os.rename(stage, root)
+        except Exception:
+            if previous_path is not None:
+                try:
+                    os.rename(previous_path, root)
+                except OSError as rollback_exc:
+                    raise ReaderImportError(f"修復未完成；舊資料保留在 {previous_path}") from rollback_exc
+            raise
     except Exception:
         shutil.rmtree(stage, ignore_errors=True)
         raise
     return ReaderPreview(str(book_id), str(item_id), title, root / "preview.html", family, digest,
-                         len(paragraphs))
+                         len(paragraphs), previous_path)

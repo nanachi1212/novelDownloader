@@ -210,10 +210,13 @@ class FanqiePreviewDialog(QDialog):
             QMessageBox.warning(self, "無法建立字型閱讀預覽", str(exc))
             self.update_buttons()
             return
-        self.status.setText(
+        message = (
             f"閱讀預覽頁已建立（{result.font_family}，{result.paragraph_count} 段）；"
             "請在瀏覽器確認頁首字型載入狀態。"
         )
+        if result.previous_path:
+            message += f" 舊的無效預覽已保留在：{result.previous_path}"
+        self.status.setText(message)
         self.update_buttons()
 
     def _choose_reader_source(self):
@@ -379,8 +382,8 @@ class FanqiePreviewDialog(QDialog):
         self.save_selected_button.setEnabled(bool(chapter and chapter.access == "public_candidate" and not cache_exists and not (self.worker and self.worker.isRunning())))
         self.preview_button.setEnabled(can_read)
         self.import_reader_button.setEnabled(bool(chapter and chapter.access == "public_candidate"
-                                                  and not self._has_reading_preview(chapter)))
-        self.reading_preview_button.setEnabled(self._has_reading_preview(chapter))
+                                                  and not reader_valid))
+        self.reading_preview_button.setEnabled(reader_valid)
         self.original_button.setEnabled(chapter is not None)
         self.save_first_button.setEnabled(bool(self.chapters) and not (self.worker and self.worker.isRunning()))
 

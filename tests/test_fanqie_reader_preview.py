@@ -1,6 +1,7 @@
 import base64
 import hashlib
 import json
+import os
 
 import pytest
 
@@ -72,6 +73,45 @@ def test_preview_status_rejects_missing_or_changed_font(tmp_path):
     assert reading_preview_status(root, "999", "101") == (False, "字型內容與預覽索引不符")
     font.unlink()
     assert reading_preview_status(root, "999", "101") == (False, "字型檔缺失或不唯一")
+
+
+def test_reimport_repairs_invalid_preview_and_preserves_previous_files(tmp_path):
+    page = _saved_reader(tmp_path)
+    root = tmp_path / "preview"
+    initial = import_reader_html(page, "999", "101", "第一章", root)
+    old_font = initial.preview_path.parent / "fonts" / f"{initial.font_sha256}.woff2"
+    old_font.write_bytes(b"damaged-font")
+
+    repaired = import_reader_html(page, "999", "101", "第一章", root)
+    assert repaired.previous_path is not None
+    assert repaired.previous_path.parent == repaired.preview_path.parent.parent
+    assert (repaired.previous_path / "fonts" / old_font.name).read_bytes() == b"damaged-font"
+    assert (repaired.previous_path / "source.html").is_file()
+    assert reading_preview_status(root, "999", "101")[0]
+
+    with pytest.raises(ReaderImportError, match="已有匯入資料"):
+        import_reader_html(page, "999", "101", "第一章", root)
+    assert repaired.previous_path.is_dir()
+
+
+def test_failed_repair_restores_original_invalid_folder(tmp_path, monkeypatch):
+    page = _saved_reader(tmp_path)
+    root = tmp_path / "preview"
+    initial = import_reader_html(page, "999", "101", "第一章", root)
+    old_font = initial.preview_path.parent / "fonts" / f"{initial.font_sha256}.woff2"
+    old_font.write_bytes(b"damaged-font")
+    rename = os.rename
+
+    def fail_promotion(source, target):
+        if str(source).find("-import-") >= 0 and target == initial.preview_path.parent:
+            raise OSError("synthetic rename failure")
+        return rename(source, target)
+
+    monkeypatch.setattr("fanqie_reader_preview.os.rename", fail_promotion)
+    with pytest.raises(OSError, match="synthetic rename failure"):
+        import_reader_html(page, "999", "101", "第一章", root)
+    assert old_font.read_bytes() == b"damaged-font"
+    assert not list(old_font.parent.parent.parent.glob("101-previous-*"))
 
 
 @pytest.mark.parametrize("item_id,book_id", [("wrong", "999"), ("101", "other")])
@@ -299,6 +339,17 @@ def test_gate_phrases_in_prose_or_script_do_not_reject_public_reader(tmp_path):
     source = page.read_text(encoding="utf-8")
     source = source.replace("原字元㐂", "他說请先登录，又提到购买本章與bdturing-verify")
     source = source.replace("window.secret = 'ignored'", "window.secret = '人机验证'")
+    page.write_text(source, encoding="utf-8")
+    preview = import_reader_html(page, "999", "101", "第一章", tmp_path / "preview")
+    assert preview.paragraph_count == 2
+
+
+def test_inert_template_gate_markup_does_not_block_public_reader(tmp_path):
+    page = _saved_reader(tmp_path)
+    source = page.read_text(encoding="utf-8")
+    source = source.replace("</body>",
+                            '<template><div id="login-dialog"></div></template>'
+                            '<div hidden><div id="bdturing-verify"></div></div></body>')
     page.write_text(source, encoding="utf-8")
     preview = import_reader_html(page, "999", "101", "第一章", tmp_path / "preview")
     assert preview.paragraph_count == 2
