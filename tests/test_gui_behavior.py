@@ -175,6 +175,34 @@ def test_fanqie_preview_dialog_directory_and_selection_controls(monkeypatch, tmp
         dialog.close()
 
 
+def test_loading_new_fanqie_url_clears_stale_directory(monkeypatch, tmp_path):
+    monkeypatch.setenv("NOVELDOWNLOADER_DATA_DIR", str(tmp_path / "profile"))
+    app = QApplication.instance() or QApplication([])
+    dialog = FanqiePreviewDialog("https://fanqienovel.com/page/123456789")
+    started = []
+    try:
+        dialog.book_id = "123456789"
+        dialog.chapters = [FanqieChapter("100", "第一章", "第一卷", 1, {
+            "needPay": 0, "isPaidPublication": False,
+            "isPaidStory": False, "isChapterLock": False,
+        })]
+        dialog._populate_directory()
+        monkeypatch.setattr(dialog, "_start", lambda worker: started.append(worker))
+        dialog.url_input.setText("https://fanqienovel.com/page/987654321")
+
+        dialog.load_directory()
+
+        assert len(started) == 1 and started[0].mode == "directory"
+        assert dialog.book_id == ""
+        assert dialog.chapters == []
+        assert dialog.tree.topLevelItemCount() == 0
+        assert dialog.info.text().startswith("目錄尚未載入")
+        assert not dialog.save_first_button.isEnabled()
+        assert not dialog.original_button.isEnabled()
+    finally:
+        dialog.close()
+
+
 def test_job_logs_are_separated_per_queue(monkeypatch, tmp_path):
     app, window = make_window(monkeypatch, tmp_path)
     try:

@@ -53,13 +53,20 @@ class FanqieChapter:
         access_keys = ("isChapterLock", "locked", "isLocked", "accessRestricted")
         if any(_truthy(self.statuses.get(key)) for key in access_keys):
             return "unknown_locked"
-        if all(key in self.statuses for key in ("needPay", "isPaidPublication", "isPaidStory", "isChapterLock")):
+        required_flags = ("needPay", "isPaidPublication", "isPaidStory", "isChapterLock")
+        if all(key in self.statuses and _explicit_false(self.statuses[key]) for key in required_flags):
             return "public_candidate"
         return "unknown"
 
 
 def _truthy(value):
     return value is True or value == 1 or (isinstance(value, str) and value.strip().lower() in {"1", "true", "yes"})
+
+
+def _explicit_false(value):
+    return value is False or (type(value) is int and value == 0) or (
+        isinstance(value, str) and value.strip().lower() in {"0", "false", "no"}
+    )
 
 
 def _response_access_status(data):

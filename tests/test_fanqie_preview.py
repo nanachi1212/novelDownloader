@@ -84,6 +84,18 @@ def test_directory_requires_all_access_flags_to_call_chapter_public():
     assert parse_directory_response(_directory([paid]))[0].access == "restricted"
 
 
+@pytest.mark.parametrize("invalid", [None, "unknown", [], 0.0])
+@pytest.mark.parametrize("flag", ["needPay", "isPaidPublication", "isPaidStory", "isChapterLock"])
+def test_noncanonical_access_flags_never_become_public(flag, invalid):
+    flags = {
+        "needPay": 0, "isPaidPublication": False, "isPaidStory": False,
+        "isChapterLock": False,
+    }
+    flags[flag] = invalid
+    chapter = FanqieChapter("101", "第一章", "卷", 1, flags)
+    assert chapter.access == "unknown"
+
+
 class _FakeFetcher:
     def __init__(self, raw, headers=None, status=None):
         self.raw = raw
