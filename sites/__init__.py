@@ -14,6 +14,7 @@ from .twkan import TwkanAdapter
 from .novels_com_tw import NovelsComTwAdapter
 from .zhys import ZhysAdapter
 from .sto9 import Sto9Adapter
+from .fanqie import FanqieAdapter
 from .base import SiteAdapter
 
 BUILTIN_ADAPTERS = [
@@ -28,6 +29,7 @@ BUILTIN_ADAPTERS = [
     NovelsComTwAdapter,
     ZhysAdapter,
     Sto9Adapter,
+    FanqieAdapter,
 ]
 ADAPTERS = list(BUILTIN_ADAPTERS)
 

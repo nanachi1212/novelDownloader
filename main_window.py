@@ -52,6 +52,7 @@ from state_io import LatestJsonWriter, read_json, write_json
 from app_paths import prepare_app_data
 from PyQt6.QtWidgets import QComboBox
 from sites import ADAPTERS, USER_ADAPTER_ERRORS, get_adapter, reload_adapters
+from fanqie_preview import FanqiePreviewDialog
 
 APP_VERSION = "1.6.7"
 
@@ -447,6 +448,10 @@ class NovelDownloaderUI(QMainWindow):
         paste_btn.setMaximumWidth(50)
         paste_btn.clicked.connect(self.paste_from_clipboard)
         url_layout.addWidget(paste_btn)
+        self.fanqie_preview_btn = QPushButton("番茄小說：預覽支援")
+        self.fanqie_preview_btn.setObjectName("fanqiePreviewButton")
+        self.fanqie_preview_btn.clicked.connect(self.open_fanqie_preview)
+        url_layout.addWidget(self.fanqie_preview_btn)
         layout.addLayout(url_layout)
 
         # --- 選項行（更緊湊） ---
@@ -672,6 +677,9 @@ class NovelDownloaderUI(QMainWindow):
         else:
             QMessageBox.warning(self, "提示", "剪貼板是空的")
 
+    def open_fanqie_preview(self):
+        FanqiePreviewDialog(self.url_input.text().strip(), self).exec()
+
     def job_text(self, job):
         rng = f"第{job['start'] or 1}~{job['end'] or '末'}章" if (job["start"] or job["end"]) else "全書"
         name = job["title"] or "(自動書名)"
@@ -705,6 +713,12 @@ class NovelDownloaderUI(QMainWindow):
         url = self.url_input.text().strip()
         if not url:
             QMessageBox.warning(self, "輸入不完整", "請輸入目錄頁 URL")
+            return
+        if getattr(get_adapter(url), "preview_only", False):
+            QMessageBox.information(
+                self, "番茄小說預覽模式",
+                "番茄小說目前只支援目錄與原始資料 Preview，不能加入 TXT／EPUB 下載隊列。請使用「番茄小說：預覽支援」。",
+            )
             return
         url_key = queue_url_key(url)
         duplicate = next((job for job in self.jobs

@@ -86,6 +86,8 @@ class Fetcher:
         self.throttle = throttle or Throttle(delay)  # 429 退避狀態,可跨 worker 共用
         self.extra_headers = headers or {}
         self.timeout = max(1, float(timeout))
+        self.last_response_headers = {}
+        self.last_status_code = None
 
     @property
     def current_delay(self):
@@ -118,6 +120,8 @@ class Fetcher:
                 current_url = url
                 for redirect_count in range(MAX_JS_REDIRECTS + 1):
                     r = self.session.get(current_url, headers=headers, timeout=self.timeout)
+                    self.last_response_headers = dict(r.headers)
+                    self.last_status_code = r.status_code
                     text = self._decode(r)
 
                     # Some reader sites return a tiny HTML page whose only useful action is
