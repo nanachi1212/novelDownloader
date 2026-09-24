@@ -516,6 +516,15 @@ def test_conditional_font_rule_on_intermediate_reader_container_fails_closed(tmp
         import_reader_html(page, "999", "101", "第一章", tmp_path / "preview")
 
 
+def test_scoped_font_rule_is_not_flattened_into_global_cascade(tmp_path):
+    page = _saved_reader(tmp_path)
+    css = tmp_path / "chapter_files" / "reader.css"
+    css.write_text(css.read_text(encoding="utf-8")
+                   + "@scope (.other) { p { font-weight:500; } }", encoding="utf-8")
+    with pytest.raises(ReaderImportError, match="條件式 CSS"):
+        import_reader_html(page, "999", "101", "第一章", tmp_path / "preview")
+
+
 def test_unrelated_conditional_font_rule_does_not_override_reader(tmp_path):
     page = _saved_reader(tmp_path)
     css = tmp_path / "chapter_files" / "reader.css"
@@ -622,7 +631,7 @@ def test_inert_template_gate_markup_does_not_block_public_reader(tmp_path):
     assert preview.paragraph_count == 2
 
 
-def test_inert_reader_paragraphs_and_inline_text_are_not_published(tmp_path):
+def test_hidden_reader_paragraphs_are_omitted_but_aria_and_inert_text_remain(tmp_path):
     page = _saved_reader(tmp_path)
     source = page.read_text(encoding="utf-8")
     source = source.replace("<p>第二段", '<template><p>购买本章</p></template>'
@@ -633,9 +642,19 @@ def test_inert_reader_paragraphs_and_inline_text_are_not_published(tmp_path):
     page.write_text(source, encoding="utf-8")
     preview = import_reader_html(page, "999", "101", "第一章", tmp_path / "preview")
     document = preview.preview_path.read_text(encoding="utf-8")
-    assert preview.paragraph_count == 2
-    for hidden in ("购买本章", "请先登录", "驗證碼", "隱藏正文", "隐藏字"):
+    assert preview.paragraph_count == 4
+    for hidden in ("购买本章", "请先登录", "隐藏字"):
         assert hidden not in document
+    assert "驗證碼" in document and "隱藏正文" in document
+
+
+@pytest.mark.parametrize("attribute", ['aria-hidden="true"', "inert"])
+def test_visible_gate_is_not_ignored_for_accessibility_attributes(tmp_path, attribute):
+    page = _saved_reader(tmp_path)
+    page.write_text(page.read_text(encoding="utf-8").replace(
+        "</body>", f'<div id="login-dialog" {attribute}></div></body>'), encoding="utf-8")
+    with pytest.raises(ReaderImportError, match="人機驗證要求"):
+        import_reader_html(page, "999", "101", "第一章", tmp_path / "preview")
 
 
 @pytest.mark.parametrize("declaration", ["display:none", "visibility:hidden"])

@@ -32,7 +32,7 @@ URL_RE = re.compile(r"url\(\s*(['\"]?)(.*?)\1\s*\)", re.I)
 FAMILY_RE = re.compile(r'''(?:^|;)\s*font-family\s*:\s*("(?:\\.|[^"])*"|'(?:\\.|[^'])*'|[^;}]+)''', re.I)
 CSS_COMMENT_RE = re.compile(r"/\*.*?\*/", re.S)
 CONDITIONAL_CSS_RE = re.compile(
-    r"@(?:media|supports|container|layer|document|keyframes|-webkit-keyframes)\b[^{}]*\{", re.I
+    r"@(?:media|supports|container|layer|document|scope|keyframes|-webkit-keyframes)\b[^{}]*\{", re.I
 )
 
 
@@ -244,8 +244,7 @@ def _is_inert_node(node: Tag, visibility_rules=()) -> bool:
     visibility = "visible"
     for ancestor in reversed(ancestors):
         if (ancestor.name in {"script", "style", "template", "noscript"}
-                or ancestor.has_attr("hidden") or ancestor.has_attr("inert")
-                or ancestor.get("aria-hidden") == "true"
+                or ancestor.has_attr("hidden")
                 or _css_visibility_value(ancestor, visibility_rules, "display") == "none"):
             return True
         value = _css_visibility_value(ancestor, visibility_rules, "visibility")
