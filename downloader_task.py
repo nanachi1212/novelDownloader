@@ -105,22 +105,16 @@ def order_catalog_pages(pages):
     第 1 頁無後綴的網址才重排;否則保持抓取順序,不亂猜。
     pages: [(url, chapters)];回傳同樣結構、排好序的 list。
     """
-    def template(url):
-        return re.sub(r"\d+", "#", url)
-
     if len(pages) < 2:
         return pages
 
-    if len({template(url) for url, _ in pages}) == 1:
-        return sorted(pages, key=lambda page: [int(n) for n in re.findall(r"\d+", page[0])])
-
-    # 查詢參數型分頁可能省略 page=1,例如 ?page=2、(無參數)、?page=3。
     parsed = [urlparse(url) for url, _ in pages]
+    # 明確的 page 查詢參數優先於 token、簽章等其他數字參數。
     if len({(p.scheme, p.netloc, p.path, p.fragment) for p in parsed}) == 1:
         known_page_keys = {"page", "p", "page_no", "pageno", "page_num", "page_number"}
         queries = [parse_qsl(p.query, keep_blank_values=True) for p in parsed]
         for key in known_page_keys:
-            page_values, base_queries = [], []
+            page_values = []
             valid = True
             for query in queries:
                 values = [value for name, value in query if name.lower() == key]
@@ -128,12 +122,16 @@ def order_catalog_pages(pages):
                     valid = False
                     break
                 page_values.append(int(values[0]) if values else None)
-                base_queries.append(sorted((name, value) for name, value in query if name.lower() != key))
-            if (valid and len(set(map(tuple, base_queries))) == 1
-                    and any(value is None for value in page_values)
-                    and any(value is not None for value in page_values)):
+            if valid and any(value is not None for value in page_values):
                 ordered = sorted(zip(page_values, pages), key=lambda pair: pair[0] or 1)
                 return [item for _number, item in ordered]
+
+    # 同數字模板的路徑分頁,只在其他 URL 組件完全相同時排序。
+    if len({(p.scheme, p.netloc, p.query, p.fragment,
+             re.sub(r"\d+", "#", p.path)) for p in parsed}) == 1:
+        return sorted(pages, key=lambda page: [
+            int(n) for n in re.findall(r"\d+", urlparse(page[0]).path)
+        ])
 
     # 常見的第 1 頁使用 index.html,後續頁才使用 index_2.html、index_3.html。
     # 將只有末尾分頁數字不同的路徑視為同一組,並把無後綴頁面排在第 1 頁。

@@ -227,6 +227,17 @@ def test_full_catalog_url_matches_book_id_query_parameter():
     )
 
 
+def test_full_catalog_url_matches_bid_identifier_across_catalog_routes():
+    adapter = GenericAdapter()
+    html = '''
+    <a href="/chapters.php?bid=456">全部章節</a>
+    <a href="/chapters.php?bid=123">全部章節</a>
+    '''
+    assert adapter.full_catalog_url(html, "https://example.test/book.php?bid=123") == (
+        "https://example.test/chapters.php?bid=123"
+    )
+
+
 def test_catalog_page_urls_next_page_link():
     adapter = GenericAdapter()
     html = '<div id="pager"><a href="/book/1/index_2.html">下一頁</a></div>'
@@ -298,6 +309,23 @@ def test_catalog_page_urls_accepts_numeric_links_in_page_class_container():
     '''
     assert adapter.catalog_page_urls(html, "https://example.test/list_1.html") == [
         "https://example.test/list_2.html",
+    ]
+
+
+def test_catalog_page_urls_accepts_select_options_in_page_class_container():
+    adapter = GenericAdapter()
+    html = '''
+    <div class="page">
+      <select>
+        <option value="/catalog?page=1">1</option>
+        <option value="/catalog?page=2">2</option>
+        <option value="/catalog?page=3">3</option>
+      </select>
+    </div>
+    '''
+    assert adapter.catalog_page_urls(html, "https://example.test/catalog?page=1") == [
+        "https://example.test/catalog?page=2",
+        "https://example.test/catalog?page=3",
     ]
 
 

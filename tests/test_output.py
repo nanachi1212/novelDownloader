@@ -955,6 +955,17 @@ def test_order_catalog_pages_places_unnumbered_query_page_one_first():
     assert [chapters for _url, chapters in order_catalog_pages(pages)] == [["a"], ["b"], ["c"]]
 
 
+def test_order_catalog_pages_uses_page_parameter_before_other_numeric_tokens():
+    from downloader_task import order_catalog_pages
+
+    pages = [
+        ("https://x.test/catalog?token=200&page=2", ["b"]),
+        ("https://x.test/catalog?token=300&page=1", ["a"]),
+        ("https://x.test/catalog?token=100&page=3", ["c"]),
+    ]
+    assert [chapters for _url, chapters in order_catalog_pages(pages)] == [["a"], ["b"], ["c"]]
+
+
 def test_order_catalog_pages_keeps_fetch_order_when_url_patterns_differ():
     from downloader_task import order_catalog_pages
 

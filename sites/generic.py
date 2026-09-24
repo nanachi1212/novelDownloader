@@ -155,7 +155,7 @@ class GenericAdapter(SiteAdapter):
         current = urlparse(url)
         current_book_params = [
             (key, value) for key, value in parse_qsl(current.query, keep_blank_values=True)
-            if re.fullmatch(r"(?:book|novel)?_?id", key, flags=re.I)
+            if key.lower().endswith("id") or key.lower() in {"book", "novel"}
         ]
 
         def route_stem(path):
@@ -224,7 +224,11 @@ class GenericAdapter(SiteAdapter):
                     for candidate in numeric_controls
                 )
             ]
-            return len(top_level_controls) >= 2
+            numeric_options = [
+                option for option in el.find_all("option")
+                if option.get("value") and re.search(r"\d", option["value"])
+            ]
+            return len(top_level_controls) >= 2 or len(numeric_options) >= 2
 
         def _is_pagination_marked(el, max_depth=4):
             # 只往上找幾層(附近的分頁容器),不要一路走到 body/html,
