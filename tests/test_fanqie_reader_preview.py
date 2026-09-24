@@ -5,7 +5,8 @@ import os
 
 import pytest
 
-from fanqie_reader_preview import ReaderImportError, import_reader_html, reading_preview_status
+from fanqie_reader_preview import ReaderImportError, _extract_css, import_reader_html, reading_preview_status
+from bs4 import BeautifulSoup
 
 
 FONT_BYTES = b"wOF2" + b"synthetic-font-data"
@@ -717,6 +718,19 @@ def test_stylesheet_visible_override_keeps_gate_active(tmp_path):
         "</body>", '<div id="login-dialog" class="hidden"></div></body>'), encoding="utf-8")
     with pytest.raises(ReaderImportError, match="人機驗證要求"):
         import_reader_html(page, "999", "101", "第一章", tmp_path / "preview")
+
+
+def test_interleaved_stylesheets_keep_document_source_order(tmp_path):
+    page = _saved_reader(tmp_path)
+    css = tmp_path / "chapter_files" / "reader.css"
+    css.write_text(css.read_text(encoding="utf-8") + "#reader-content {display:none}", encoding="utf-8")
+    source = page.read_text(encoding="utf-8").replace(
+        '<script>window.secret', '<style>#reader-content {display:block}</style><script>window.secret')
+    page.write_text(source, encoding="utf-8")
+    blocks = _extract_css(BeautifulSoup(source, "html.parser"), page)
+    assert "display:none" in blocks[0] and "display:block" in blocks[1]
+    preview = import_reader_html(page, "999", "101", "第一章", tmp_path / "preview")
+    assert preview.paragraph_count == 2
 
 
 def test_unrelated_input_visibility_selector_does_not_block_import(tmp_path):

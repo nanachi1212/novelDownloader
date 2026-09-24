@@ -40,7 +40,10 @@ class DecodeResult:
 
 
 def _is_pua(char: str) -> bool:
-    return 0xE000 <= ord(char) <= 0xF8FF
+    codepoint = ord(char)
+    return (0xE000 <= codepoint <= 0xF8FF
+            or 0xF0000 <= codepoint <= 0xFFFFD
+            or 0x100000 <= codepoint <= 0x10FFFD)
 
 
 def decode_pua(text: str, mode: int) -> str:

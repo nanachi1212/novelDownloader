@@ -184,6 +184,8 @@ def _chapter_paragraphs(content):
     if not isinstance(content, str) or not content.strip():
         return []
     soup = BeautifulSoup(content, "html.parser")
+    for line_break in soup.find_all("br"):
+        line_break.replace_with("\n")
     return [text for node in soup.find_all("p") if (text := node.get_text("", strip=False).strip())]
 
 

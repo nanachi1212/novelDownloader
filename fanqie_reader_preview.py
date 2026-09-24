@@ -151,12 +151,21 @@ def _font_signature(data: bytes, suffix: str) -> bool:
 
 
 def _extract_css(soup: BeautifulSoup, html_path: Path) -> list[str]:
-    blocks = [tag.string or tag.get_text() for tag in soup.find_all("style")]
-    if sum(len(block.encode("utf-8")) for block in blocks) > MAX_CSS_BYTES:
-        raise ReaderImportError("HTML 內嵌 CSS 超過允許大小。")
+    blocks = []
     root = html_path.parent
     total_external_bytes = 0
-    for link in soup.find_all("link", rel=lambda value: value and "stylesheet" in value):
+    total_inline_bytes = 0
+    for node in soup.find_all(["style", "link"]):
+        if node.name == "style":
+            block = node.string or node.get_text()
+            total_inline_bytes += len(block.encode("utf-8"))
+            if total_inline_bytes > MAX_CSS_BYTES:
+                raise ReaderImportError("HTML 內嵌 CSS 超過允許大小。")
+            blocks.append(block)
+            continue
+        if "stylesheet" not in (node.get("rel") or []):
+            continue
+        link = node
         href = (link.get("href") or "").strip()
         if not href or urlparse(href).scheme or href.startswith(("//", "data:")):
             continue

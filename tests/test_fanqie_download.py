@@ -7,7 +7,7 @@ import pytest
 import downloader_task
 from fanqie_decoder import CHARSETS, DecodeFailed, decode_chapter, decode_pua
 from fetcher import FetchError
-from sites.fanqie import AccessVerificationRequired, FanqieAdapter, FanqieError
+from sites.fanqie import AccessVerificationRequired, FanqieAdapter, FanqieError, _chapter_paragraphs
 
 
 BOOK_ID = "999"
@@ -72,6 +72,19 @@ def test_fixed_tables_decode_only_known_private_use_positions():
         decode_chapter(chr(0xE3E8 + CHARSETS[0].index("?")), preferred_mode=0)
     with pytest.raises(DecodeFailed, match="DECODE_FAILED"):
         decode_chapter("\uf000" * 30)
+    for char in ("\U000f0000", "\U00100000"):
+        with pytest.raises(DecodeFailed, match="DECODE_FAILED"):
+            decode_chapter(char * 30)
+        with pytest.raises(DecodeFailed, match="DECODE_FAILED"):
+            decode_chapter(char, preferred_mode=0)
+
+
+def test_reader_paragraph_breaks_survive_html_flattening():
+    assert _chapter_paragraphs("<p>第一行<br>第二行<br/>第三行</p>") == ["第一行\n第二行\n第三行"]
+    adapter = _adapter()
+    adapter.chapter_source_url(_reader(), READER_URL)
+    body = adapter.parse_chapter(_reader(content=f"<p>{RAW}<br>下段</p>"))
+    assert body == "人在这里" * 12 + "\n下段"
 
 
 def test_directory_becomes_ordered_bookinfo_and_fails_closed():
