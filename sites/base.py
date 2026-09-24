@@ -1,11 +1,12 @@
 """站點 adapter 介面。新增網站時繼承 SiteAdapter 並在 sites/__init__.py 註冊。"""
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass
 class Chapter:
     title: str
     url: str
+    extra_urls: list = field(default_factory=list)  # 目錄把同一章拆成多個項目時，其餘網址
 
 
 @dataclass
@@ -38,6 +39,22 @@ class SiteAdapter:
 
     def parse_catalog(self, html: str) -> BookInfo:
         raise NotImplementedError
+
+    def full_catalog_url(self, html: str, url: str):
+        """目錄頁是摺疊的(需「展開全部／查看全部章節」才有完整清單)時,
+        回傳完整目錄的網址;預設回傳 None 表示目錄頁本身已完整。
+        """
+        return None
+
+    def catalog_page_urls(self, html: str, url: str) -> list:
+        """目錄分成多頁時,回傳「目前頁以外」其餘分頁的網址(依序);
+        預設回傳空列表表示目錄只有一頁。
+        """
+        return []
+
+    def parse_catalog_page(self, html: str, url: str) -> BookInfo:
+        """解析目錄的其中一個分頁;預設等同 parse_catalog。"""
+        return self.parse_catalog(html)
 
     def parse_chapter(self, html: str, title: str = "") -> str:
         """回傳過濾廣告後的乾淨內文。title 用於去除內文開頭重複的章節標題。"""

@@ -5,14 +5,16 @@ import json
 import os
 import logging
 import time
+import unicodedata
 import zipfile
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from urllib.parse import parse_qsl, urlparse
 
 from fetcher import FetchError, Fetcher
 from sites import get_adapter
-from sites.base import join_pages
+from sites.base import Chapter, join_pages
 from textfilter import apply_rules, drop_repeated, load_rules
 from state_io import read_json, write_json
 from app_paths import prepare_app_data
@@ -23,6 +25,13 @@ MAX_IN_MEMORY_CONTENT_BYTES = 64 * 1024 * 1024
 CHAPTER_RETRY_MAX_WAIT = 8      # 單章重試之間的退避上限(秒)
 RETRY_COOLDOWN = 20             # 第一輪失敗後的冷卻秒數,等網站的暫時性限速解除
 ABORT_AFTER_CONSECUTIVE = 20    # 開頭連續這麼多章全失敗就直接中止
+MAX_CATALOG_PAGES = 200         # 目錄分頁上限,避免分頁連結壞掉時無窮抓取
+
+# 目錄把同一章拆成多個項目時的編號後綴,例如「第一章(2)」「第一章（3/5）」「第一章【2】」
+SPLIT_SUFFIX_RE = re.compile(
+    r"^(?P<base>.*?)\(\s*(?P<part>\d+)(?:\s*/\s*(?P<total>\d+))?\s*\)$"
+    r"|^(?P<base2>.*?)[【\[]\s*(?P<part2>\d+)\s*[】\]]$"
+)
 
 
 class Cancelled(Exception):
@@ -74,6 +83,129 @@ def unique_chapters(chapters):
             seen.add(key)
             result.append(chapter)
     return result
+
+
+def _split_chapter_suffix(title: str):
+    """回傳 (去掉編號後綴的標題, 編號, 宣告的總段數);沒有後綴回傳 (原標題, None, None)。"""
+    normalized = unicodedata.normalize("NFKC", title.strip())
+    m = SPLIT_SUFFIX_RE.match(normalized)
+    if not m:
+        return normalized, None, None
+    base = m.group("base") if m.group("base") is not None else m.group("base2")
+    part = m.group("part") if m.group("part") is not None else m.group("part2")
+    total = m.group("total")
+    return base.strip(), int(part), int(total) if total else None
+
+
+def order_catalog_pages(pages):
+    """依網址裡的頁碼還原目錄分頁順序。
+
+    使用者可能貼的是第 2 頁,分頁控制項卻同時連到第 1、3 頁,單純依抓取順序
+    會得到 2、1、3。相同數字模板或 `index.html` 搭配 `index_2.html` 這類
+    第 1 頁無後綴的網址才重排;否則保持抓取順序,不亂猜。
+    pages: [(url, chapters)];回傳同樣結構、排好序的 list。
+    """
+    if len(pages) < 2:
+        return pages
+
+    parsed = [urlparse(url) for url, _ in pages]
+    # 明確的 page 查詢參數優先於 token、簽章等其他數字參數。
+    if len({(p.scheme, p.netloc, p.path, p.fragment) for p in parsed}) == 1:
+        known_page_keys = {"page", "p", "page_no", "pageno", "page_num", "page_number"}
+        queries = [parse_qsl(p.query, keep_blank_values=True) for p in parsed]
+        for key in known_page_keys:
+            page_values = []
+            valid = True
+            for query in queries:
+                values = [value for name, value in query if name.lower() == key]
+                if len(values) > 1 or (values and not values[0].isdigit()):
+                    valid = False
+                    break
+                page_values.append(int(values[0]) if values else None)
+            if valid and any(value is not None for value in page_values):
+                ordered = sorted(zip(page_values, pages), key=lambda pair: pair[0] or 1)
+                return [item for _number, item in ordered]
+
+    # 同數字模板的路徑分頁,只在其他 URL 組件完全相同時排序。
+    if len({(p.scheme, p.netloc, p.query, p.fragment,
+             re.sub(r"\d+", "#", p.path)) for p in parsed}) == 1:
+        return sorted(pages, key=lambda page: [
+            int(n) for n in re.findall(r"\d+", urlparse(page[0]).path)
+        ])
+
+    # 常見的第 1 頁使用 index.html,後續頁才使用 index_2.html、index_3.html。
+    # 將只有末尾分頁數字不同的路徑視為同一組,並把無後綴頁面排在第 1 頁。
+    if len({(p.scheme, p.netloc, p.query, p.fragment) for p in parsed}) != 1:
+        return pages
+    page_paths = []
+    for parsed_url in parsed:
+        match = re.match(r"^(.*?)(?:[_-](\d+))?(\.[^/.]+)?$", parsed_url.path)
+        if not match:
+            return pages
+        base, number, extension = match.groups()
+        if not number and not extension:
+            return pages
+        page_paths.append((base + (extension or ""), int(number) if number else 1, number is None))
+    # canonical path 相同已證明末尾格式一致;還要至少有一個無後綴的頁一
+    # 和一個明確頁碼,避免替普通含數字的不同網址推測順序。
+    if (len({path for path, _number, _unnumbered in page_paths}) != 1
+            or not any(unnumbered for _path, _number, unnumbered in page_paths)
+            or not any(not unnumbered for _path, _number, unnumbered in page_paths)):
+        return pages
+    return [item for _number, item in sorted(
+        ((page_number, item) for (_path, page_number, _unnumbered), item in zip(page_paths, pages)),
+        key=lambda pair: pair[0],
+    )]
+
+
+def merge_split_chapters(chapters):
+    """目錄把同一章拆成多個項目(第一章(1)、第一章(2)…)時合併成一章。
+
+    只在「相鄰、標題基底相同、編號連續」時合併;第一項可省略編號(視為第 1 段)。
+    回傳 (合併後章節, 是否有發生合併)。
+    """
+    if len(chapters) < 2:
+        return chapters, False
+
+    merged, happened = [], False
+    i, n = 0, len(chapters)
+    while i < n:
+        base, part, total = _split_chapter_suffix(chapters[i].title)
+        if part not in (None, 1):
+            # 第 1 段不在(目錄漏抓或解析失敗),不能從第 2/3 段開始假裝合併出
+            # 一個「完整」章節,那樣會把缺頭的內容悄悄藏起來。
+            merged.append(chapters[i])
+            i += 1
+            continue
+        group = [chapters[i]]
+        totals = {total} if total is not None else set()
+        expected = (part or 1) + 1
+        j = i + 1
+        while j < n:
+            nbase, npart, ntotal = _split_chapter_suffix(chapters[j].title)
+            if nbase != base or npart != expected:
+                break
+            group.append(chapters[j])
+            if ntotal is not None:
+                totals.add(ntotal)
+            expected += 1
+            j += 1
+        if len(group) > 1 and totals and (len(totals) != 1 or len(group) != next(iter(totals))):
+            # 標題寫明「共 N 段」但目錄只有其中幾段(其餘漏抓/解析失敗),或各段宣告的
+            # 總數不一致:不能合併成一個看似完整的章節,否則會悄悄藏起被截斷的章節。
+            group = group[:1]
+        if len(group) > 1:
+            happened = True
+            head = group[0]
+            extra_urls = list(head.extra_urls)
+            for chapter in group[1:]:
+                extra_urls.append(chapter.url)
+                extra_urls.extend(chapter.extra_urls)
+            merged.append(Chapter(title=base, url=head.url, extra_urls=extra_urls))
+        else:
+            merged.append(chapters[i])
+        i = j if len(group) > 1 else i + 1
+    return merged, happened
 
 
 def output_basename(title: str, author: str, site: str, pattern: str = "title") -> str:
@@ -132,19 +264,45 @@ def fetch_parsed_chapter(fetcher, adapter, chapter, retries: int, on_retry=None)
                 on_retry(attempt + 1, attempts, wait, last_err)
             time.sleep(wait)
         try:
-            html = fetcher.get(chapter.url, retries=1)
-            source_url = adapter.chapter_source_url(html, chapter.url)
-            if source_url:
-                html = fetcher.get(source_url, referer=chapter.url, retries=1)
-            parts = [adapter.parse_chapter(html, title=chapter.title)]
-            next_url = adapter.next_page_url(html, chapter.url)
+            parts = []
             seen = {chapter.url}
-            while next_url and next_url not in seen:
-                seen.add(next_url)
-                html = fetcher.get(next_url, retries=1)
-                parts.append(adapter.parse_chapter(html, title=chapter.title))
-                next_url = adapter.next_page_url(html, next_url)
-            return join_pages(parts)
+
+            def fetch_one(page_url, referer=None):
+                html = fetcher.get(page_url, referer=referer, retries=1)
+                source_url = adapter.chapter_source_url(html, page_url)
+                if source_url:
+                    html = fetcher.get(source_url, referer=page_url, retries=1)
+                parsed = adapter.parse_chapter(html, title=chapter.title)
+                if not isinstance(parsed, str) or not parsed.strip():
+                    raise ValueError(f"章節分頁正文為空: {page_url}")
+                parts.append(parsed)
+                return html
+
+            def follow_same_chapter_pages(html, page_url):
+                next_url = adapter.next_page_url(html, page_url)
+                while next_url and next_url not in seen:
+                    seen.add(next_url)
+                    html = fetch_one(next_url)
+                    next_url = adapter.next_page_url(html, next_url)
+
+            html = fetch_one(chapter.url)
+            follow_same_chapter_pages(html, chapter.url)
+
+            # 目錄把同一章拆成多個項目時(merge_split_chapters 合併後),其餘網址
+            # 都在這裡依序抓;next_page_url 與 extra_urls 共用 seen,同一 URL 不重抓。
+            for extra_url in chapter.extra_urls:
+                if extra_url in seen:
+                    continue
+                seen.add(extra_url)
+                html = fetch_one(extra_url)
+                follow_same_chapter_pages(html, extra_url)
+
+            content = join_pages(parts)
+            if not content.strip():
+                # 空正文(選錯區塊、被拆頁但正文其實是限速/錯誤頁)一律當失敗重試,
+                # 絕不能讓呼叫端把空字串當成功寫入快取。
+                raise ValueError(f"章節正文為空: {chapter.url}")
+            return content
         except (FetchError, ValueError) as e:
             last_err = e
     raise last_err
@@ -233,7 +391,68 @@ def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
         title, author = adapter.parse_meta(fetcher.get(meta_url, retries=retries))
     else:
         title = author = ""
-    book = adapter.parse_catalog(fetcher.get(catalog_url, retries=retries))
+
+    catalog_html = fetcher.get(catalog_url, retries=retries)
+    full_url = adapter.full_catalog_url(catalog_html, catalog_url)
+    collapsed_metadata = None
+    if full_url and full_url != catalog_url:
+        if getattr(adapter, "is_generic", False) and not title:
+            collapsed_metadata = adapter.parse_catalog_metadata(catalog_html)
+        callback("catalog", 0, 1, "[目錄] 已展開完整目錄")
+        catalog_url = full_url
+        fetcher.polite_sleep()
+        catalog_html = fetcher.get(catalog_url, retries=retries)
+
+    # 用 parse_catalog_page 而非 parse_catalog:展開完整目錄後,GenericAdapter
+    # 需要知道實際抓到的是哪個網址,才能正確解析頁面上的相對連結
+    # (catalog_url() 當初記下的是展開前的舊網址)。
+    book = adapter.parse_catalog_page(catalog_html, catalog_url)
+    if collapsed_metadata:
+        if not book.title or book.title == "未知書名":
+            book.title = collapsed_metadata[0]
+        if not book.author:
+            book.author = collapsed_metadata[1]
+    template_name = getattr(adapter, "template_name", None)
+    if template_name:
+        callback("catalog", 0, 1, f"[自動偵測] 目錄套用內建模板: {template_name}")
+
+    # 目錄分頁:反覆問 adapter「還有哪些分頁」,直到沒有新分頁為止。
+    # 迴圈安全由 visited_pages(每個網址只抓一次)+ MAX_CATALOG_PAGES(硬上限)
+    # 保證,不會因為 A→B→A 這種循環而無窮抓取。用「新增的章節網址」而非單純的
+    # 章節數變化來判斷有沒有進展:某一頁剛好是重複頁/別名(0 個新章節)只代表
+    # 那一頁沒帶來新東西,不代表後面排隊的其他頁也一樣,所以不整批中止,
+    # 只是這頁不計入章節、繼續處理佇列裡剩下的頁面。
+    visited_pages = {catalog_url}
+    seen_chapter_urls = {c.url for c in book.chapters}
+    catalog_pages = [(catalog_url, list(book.chapters))]  # 依抓取順序記下每一頁,最後依頁碼還原順序
+    queue = list(adapter.catalog_page_urls(catalog_html, catalog_url))
+    pages_fetched = 0
+    host = urlparse(catalog_url).netloc
+    while queue and pages_fetched < MAX_CATALOG_PAGES:
+        next_url = queue.pop(0)
+        if next_url in visited_pages or urlparse(next_url).netloc != host:
+            continue
+        visited_pages.add(next_url)
+        pages_fetched += 1
+        fetcher.polite_sleep()
+        next_html = fetcher.get(next_url, retries=retries)
+        extra = adapter.parse_catalog_page(next_html, next_url)
+        new_chapters = [c for c in extra.chapters if c.url not in seen_chapter_urls]
+        if new_chapters:
+            seen_chapter_urls.update(c.url for c in new_chapters)
+            catalog_pages.append((next_url, new_chapters))
+        for more in adapter.catalog_page_urls(next_html, next_url):
+            if more not in visited_pages and more not in queue:
+                queue.append(more)
+    if any(urlparse(pending).netloc == host and pending not in visited_pages for pending in queue):
+        raise ValueError(
+            f"目錄分頁超過安全上限 {MAX_CATALOG_PAGES} 頁,已停止以免輸出不完整目錄"
+        )
+    if pages_fetched:
+        book.chapters = [c for _url, chapters in order_catalog_pages(catalog_pages) for c in chapters]
+        callback("catalog", 0, 1,
+                 f"[目錄分頁] 共抓取 {pages_fetched} 頁,合計 {len(book.chapters)} 個章節連結")
+
     if title:
         book.title = title
     if author:
@@ -259,6 +478,13 @@ def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
     book.chapters = unique_chapters(book.chapters)
     if len(book.chapters) != original_count:
         callback("catalog", 0, 1, f"[目錄去重] 移除 {original_count - len(book.chapters)} 個重複章節連結")
+
+    pre_merge_count = len(book.chapters)
+    book.chapters, merged = merge_split_chapters(book.chapters)
+    if merged:
+        callback("catalog", 0, 1,
+                 f"[合併分頁章節] 由 {pre_merge_count} 個目錄項目合併為 {len(book.chapters)} 章")
+
     total_all = len(book.chapters)
     lo = max(1, start or 1)
     hi = min(total_all, end or total_all)
@@ -270,8 +496,16 @@ def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
     callback("catalog", 1, 1,
              f"《{book.title}》作者: {book.author},全書 {total_all} 章{range_note},共下載 {total} 章")
 
-    cache = cache_root() / adapter.book_id(url)
+    # 有合併發生時快取換一個命名空間,避免舊快取(依合併前的章節位置編號)
+    # 對不上合併後的新章節順序。
+    cache = cache_root() / (adapter.book_id(url) + ("-merged" if merged else ""))
     cache.mkdir(parents=True, exist_ok=True)
+    prior_progress = read_json(cache / "progress.json", {})
+    if (isinstance(prior_progress, dict) and prior_progress.get("total_chapters")
+            and prior_progress["total_chapters"] != total_all and any(cache.glob("*.txt"))):
+        callback("catalog", 0, 1,
+                 f"[快取提醒] 目錄章數由 {prior_progress['total_chapters']} 變成 {total_all},"
+                 "網站章節可能有增刪或改版,既有快取的章號可能對不上;不確定時建議清空快取後重新下載")
     save_progress(cache, url=url, title=book.title, total_chapters=total_all, range=[lo, hi], status="downloading")
 
     results = [None] * total  # (章節標題, 快取檔案)，固定索引保證輸出順序
@@ -318,8 +552,9 @@ def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
 
             try:
                 content = fetch_parsed_chapter(active_fetcher, adapter, ch, retries, on_retry)
-            except FetchError as exc:
-                # 單章暫時性失敗(網站偶發 404/逾時)不寫快取,交由呼叫端決定是否中止整本
+            except (FetchError, ValueError) as exc:
+                # 單章失敗(網站偶發 404/逾時,或該章解析結果是空正文/選錯區塊)不寫快取,
+                # 交由呼叫端決定是否中止整本;絕不能讓單一章節的 ValueError 弄垮整批下載。
                 return n, idx, ch.title, None, False, str(exc)
             if is_generic and n == 1 and len(content) < 80:
                 raise ValueError(
@@ -373,7 +608,7 @@ def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
             cache_file = cache / f"{idx:04d}.txt"
             try:
                 content = fetch_parsed_chapter(fetcher, adapter, ch, retries)
-            except FetchError as exc:
+            except (FetchError, ValueError) as exc:
                 last_error = str(exc)
                 remaining.append((idx, ch.title))
                 continue
