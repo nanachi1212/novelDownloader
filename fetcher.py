@@ -1,8 +1,10 @@
-"""Cloudflare-bypass 抓取層:curl_cffi session、重試、編碼處理、限速、429 退避。"""
+"""Cloudflare-bypass 抓取層:curl_cffi session、重試、編碼處理、限速、429/503 退避。"""
+import datetime
 import random
 import re
 import threading
 import time
+from email.utils import parsedate_to_datetime
 from urllib.parse import urljoin
 
 from curl_cffi import requests
@@ -13,9 +15,36 @@ JS_REDIRECT = re.compile(
     r"window\.location\.href\s*=\s*(['\"])(?P<url>[^'\"]+)\1", re.I
 )
 MAX_JS_REDIRECTS = 5
-MAX_BACKOFF_DELAY = 60.0      # 429 退避上限,避免一次卡住數分鐘
-MAX_RATE_LIMIT_HITS = 6       # 單次請求最多容忍幾次 429
+MAX_BACKOFF_DELAY = 60.0      # 429/503 退避上限,避免一次卡住數分鐘
+MAX_RATE_LIMIT_HITS = 6       # 單次請求最多容忍幾次限速回應
 HUMAN_CHECK = re.compile(r"human verification|g-recaptcha|hcaptcha", re.I)
+# HTTP 200 但頁面其實是限速提示的「軟封鎖」頁;必須夠短且命中關鍵字才判定,
+# 避免把單純字數少的正文誤判成封鎖頁。
+SOFT_BLOCK_MAX_LEN = 3000
+SOFT_BLOCK_RE = re.compile(
+    r"訪問過於頻繁|访问过于频繁|操作太頻繁|操作太频繁|請求過快|请求过快|"
+    r"請稍後再試|请稍后再试|too many requests|rate limit",
+    re.I,
+)
+
+
+def _retry_after_seconds(headers):
+    """解析 Retry-After 標頭(秒數或 HTTP-date),失敗回傳 None。"""
+    value = (headers.get("Retry-After") or "").strip()
+    if not value:
+        return None
+    if value.isdigit():
+        return float(value)
+    try:
+        dt = parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        return None
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=datetime.timezone.utc)
+    now = datetime.datetime.now(datetime.timezone.utc)
+    return max(0.0, (dt - now).total_seconds())
 
 
 class Throttle:
@@ -104,18 +133,35 @@ class Fetcher:
                         continue
                     break
 
-                if r.status_code == 429:
-                    # 速率限制:整本書共用的延遲加倍後重試,且不算進一般重試次數
+                if r.status_code in (429, 503):
+                    # 速率限制:整本書共用的延遲加倍後重試,且不算進一般重試次數;
+                    # 有 Retry-After 就至少等它說的秒數(上限沿用退避上限)。
                     wait = self.throttle.back_off()
+                    retry_after = _retry_after_seconds(r.headers)
+                    if retry_after is not None and retry_after > wait:
+                        wait = min(retry_after, MAX_BACKOFF_DELAY)
+                        with self.throttle.lock:
+                            self.throttle.delay = wait
                     rate_limit_hits += 1
                     attempt -= 1
-                    last_err = f"HTTP 429 速率限制,退避到 {wait:.1f}s"
+                    last_err = f"HTTP {r.status_code} 速率限制,退避到 {wait:.1f}s"
                     if rate_limit_hits >= MAX_RATE_LIMIT_HITS:
                         break
                     time.sleep(wait)
                     continue
 
                 if r.status_code == 200 and "Just a moment" not in text:
+                    if len(text) < SOFT_BLOCK_MAX_LEN and SOFT_BLOCK_RE.search(text):
+                        # 200 但內容其實是「訪問過於頻繁」之類的軟封鎖頁:當限速處理,
+                        # 絕不能把這種頁面當正文回傳(呼叫端會誤寫入快取)。
+                        wait = self.throttle.back_off()
+                        rate_limit_hits += 1
+                        attempt -= 1
+                        last_err = f"HTTP 200 頁面顯示速率限制,退避到 {wait:.1f}s"
+                        if rate_limit_hits >= MAX_RATE_LIMIT_HITS:
+                            break
+                        time.sleep(wait)
+                        continue
                     self.last_url = current_url
                     self.throttle.relax()
                     return text

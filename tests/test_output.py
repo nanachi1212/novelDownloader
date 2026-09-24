@@ -2,9 +2,10 @@ from zipfile import ZipFile
 import threading
 import time
 
-from downloader_task import atomic_write_text, chapter_number_warning, fetch_parsed_chapter, safe_filename, save_progress, unique_chapters, write_epub, write_txt_from_files
+from downloader_task import atomic_write_text, chapter_number_warning, fetch_parsed_chapter, merge_split_chapters, safe_filename, save_progress, unique_chapters, write_epub, write_txt_from_files
 from sites.base import Chapter
 from sites.base import BookInfo
+from sites.base import SiteAdapter
 from fetcher import FetchError
 
 
@@ -79,7 +80,7 @@ def test_single_book_downloads_chapters_in_parallel_but_writes_catalog_order(mon
         def polite_sleep(self):
             pass
 
-    class FakeAdapter:
+    class FakeAdapter(SiteAdapter):
         encoding = "utf-8"
         domains = ["example.test"]
         is_generic = False
@@ -127,7 +128,7 @@ def test_single_worker_reuses_catalog_session_for_protected_chapters(monkeypatch
         def polite_sleep(self):
             pass
 
-    class ProtectedAdapter:
+    class ProtectedAdapter(SiteAdapter):
         encoding = "utf-8"
         domains = ["protected.test"]
         is_generic = False
@@ -181,7 +182,7 @@ def test_parallel_workers_copy_catalog_session_cookies(monkeypatch, tmp_path):
         def polite_sleep(self):
             pass
 
-    class ProtectedAdapter:
+    class ProtectedAdapter(SiteAdapter):
         encoding = "utf-8"
         domains = ["parallel-protected.test"]
         is_generic = False
@@ -222,7 +223,7 @@ def test_fetch_parsed_chapter_retries_when_parser_gets_wrong_page():
             self.calls += 1
             return "book page" if self.calls == 1 else "chapter page"
 
-    class FakeAdapter:
+    class FakeAdapter(SiteAdapter):
         def chapter_source_url(self, html, url):
             return None
 
@@ -252,7 +253,7 @@ def test_fetch_parsed_chapter_retries_transient_fetch_failure():
                 raise FetchError("temporary timeout")
             return "chapter page"
 
-    class FakeAdapter:
+    class FakeAdapter(SiteAdapter):
         def chapter_source_url(self, html, url):
             return None
 
@@ -277,6 +278,142 @@ def test_unique_chapters_keeps_first_url_and_order():
     ]
 
     assert [chapter.title for chapter in unique_chapters(chapters)] == ["第一章", "第二章"]
+
+
+def test_merge_split_chapters_combines_consecutive_numbered_parts():
+    chapters = [
+        Chapter("第一章", "https://example/ch1"),
+        Chapter("第一章(2)", "https://example/ch1_2"),
+        Chapter("第一章(3)", "https://example/ch1_3"),
+        Chapter("第二章", "https://example/ch2"),
+    ]
+
+    merged, happened = merge_split_chapters(chapters)
+
+    assert happened is True
+    assert [c.title for c in merged] == ["第一章", "第二章"]
+    assert merged[0].url == "https://example/ch1"
+    assert merged[0].extra_urls == ["https://example/ch1_2", "https://example/ch1_3"]
+    assert merged[1].extra_urls == []
+
+
+def test_merge_split_chapters_handles_fullwidth_and_bracket_suffixes():
+    chapters = [
+        Chapter("第一章（1）", "https://example/ch1"),
+        Chapter("第一章（2）", "https://example/ch1_2"),
+        Chapter("第二章【1】", "https://example/ch2"),
+        Chapter("第二章【2】", "https://example/ch2_2"),
+    ]
+
+    merged, happened = merge_split_chapters(chapters)
+
+    assert happened is True
+    assert [c.title for c in merged] == ["第一章", "第二章"]
+
+
+def test_merge_split_chapters_does_not_merge_non_consecutive_parts():
+    chapters = [
+        Chapter("第一章(1)", "https://example/ch1"),
+        Chapter("第一章(3)", "https://example/ch1_3"),
+    ]
+    merged, happened = merge_split_chapters(chapters)
+    assert happened is False
+    assert [c.title for c in merged] == ["第一章(1)", "第一章(3)"]
+
+
+def test_merge_split_chapters_does_not_merge_different_base_titles():
+    chapters = [
+        Chapter("第一章(1)", "https://example/ch1"),
+        Chapter("第二章(2)", "https://example/ch2"),
+    ]
+    merged, happened = merge_split_chapters(chapters)
+    assert happened is False
+    assert [c.title for c in merged] == ["第一章(1)", "第二章(2)"]
+
+
+def test_merge_split_chapters_keeps_unrelated_paginated_reading_pages():
+    """52shuku 這類「目錄就是連續閱讀頁」的站,標題是「第1頁/第2頁」,
+    不應該被誤判成同一章的拆分編號。
+    """
+    chapters = [Chapter("第1頁", "https://example/p1"), Chapter("第2頁", "https://example/p2")]
+    merged, happened = merge_split_chapters(chapters)
+    assert happened is False
+    assert [c.title for c in merged] == ["第1頁", "第2頁"]
+
+
+def test_fetch_parsed_chapter_fetches_extra_urls_and_shares_visited_set():
+    class FakeFetcher:
+        def __init__(self):
+            self.calls = []
+
+        def get(self, url, referer=None, retries=1):
+            self.calls.append(url)
+            return {"https://example/ch1": "P1", "https://example/ch1_2": "P2"}[url]
+
+    class FakeAdapter(SiteAdapter):
+        def chapter_source_url(self, html, url):
+            return None
+
+        def next_page_url(self, html, url):
+            return None
+
+        def parse_chapter(self, html, title=""):
+            return html
+
+    fetcher = FakeFetcher()
+    chapter = Chapter("第一章", "https://example/ch1", extra_urls=["https://example/ch1_2", "https://example/ch1_2"])
+    content = fetch_parsed_chapter(fetcher, FakeAdapter(), chapter, 1)
+
+    assert content == "P1\n\nP2"
+    assert fetcher.calls == ["https://example/ch1", "https://example/ch1_2"]  # 重複的 extra_url 不重抓
+
+
+def test_fetch_parsed_chapter_treats_empty_content_as_failure_and_retries():
+    class FakeFetcher:
+        def __init__(self):
+            self.calls = 0
+
+        def get(self, url, referer=None, retries=1):
+            self.calls += 1
+            return "empty page" if self.calls == 1 else "real page"
+
+    class FakeAdapter(SiteAdapter):
+        def chapter_source_url(self, html, url):
+            return None
+
+        def next_page_url(self, html, url):
+            return None
+
+        def parse_chapter(self, html, title=""):
+            return "" if html == "empty page" else "正文"
+
+    fetcher = FakeFetcher()
+    content = fetch_parsed_chapter(fetcher, FakeAdapter(), Chapter("第1章", "https://example/ch1"), 3)
+    assert content == "正文"
+    assert fetcher.calls == 2
+
+
+def test_fetch_parsed_chapter_raises_after_exhausting_retries_on_empty_content():
+    class FakeFetcher:
+        def get(self, url, referer=None, retries=1):
+            return "empty page"
+
+    class FakeAdapter(SiteAdapter):
+        def chapter_source_url(self, html, url):
+            return None
+
+        def next_page_url(self, html, url):
+            return None
+
+        def parse_chapter(self, html, title=""):
+            return ""
+
+    try:
+        fetch_parsed_chapter(FakeFetcher(), FakeAdapter(), Chapter("第1章", "https://example/ch1"), 2)
+    except ValueError as exc:
+        assert "空" in str(exc)
+    else:
+        raise AssertionError("empty content should raise after exhausting retries")
 
 
 def test_atomic_write_replaces_part_file(tmp_path):
@@ -337,7 +474,7 @@ def _tolerance_setup(monkeypatch, tmp_path, failing_urls, chapters=6, fail_times
         def polite_sleep(self):
             pass
 
-    class FakeAdapter:
+    class FakeAdapter(SiteAdapter):
         encoding = "utf-8"
         domains = ["example.test"]
         is_generic = False
@@ -409,3 +546,183 @@ def test_temporary_404_recovers_on_the_slow_retry_pass(monkeypatch, tmp_path):
     assert any(m.startswith("[重試] 4 章第一輪失敗") for m in messages)
     assert sum(m.startswith("[重試成功]") for m in messages) == 4
     assert not any(m.startswith("[略過]") for m in messages)
+
+
+def test_catalog_expansion_and_pagination_are_followed(monkeypatch, tmp_path):
+    """目錄摺疊需要展開,展開後的完整目錄還分頁:兩者都要跟著抓。"""
+    import downloader_task
+
+    class FakeFetcher:
+        def __init__(self, **_kwargs):
+            self.throttle = None
+
+        def get(self, url, **_kwargs):
+            return url
+
+        def polite_sleep(self):
+            pass
+
+    class PagedAdapter(SiteAdapter):
+        encoding = "utf-8"
+        domains = ["paged.test"]
+        is_generic = False
+
+        def catalog_url(self, _url): return "catalog"
+        def meta_url(self, _url): return None
+
+        def full_catalog_url(self, html, _url):
+            return "full-catalog" if html == "catalog" else None
+
+        def parse_catalog(self, html):
+            assert html == "full-catalog"
+            return BookInfo("分頁測試", "", [Chapter("第1章", "chapter-1"), Chapter("第2章", "chapter-2")])
+
+        def catalog_page_urls(self, html, url):
+            return ["page2"] if url == "full-catalog" else []
+
+        def parse_catalog_page(self, html, url):
+            assert url == "page2"
+            return BookInfo("", "", [Chapter("第3章", "chapter-3"), Chapter("第4章", "chapter-4")])
+
+        def book_id(self, _url): return "paged-test"
+        def chapter_source_url(self, _html, _url): return None
+        def next_page_url(self, _html, _url): return None
+        def parse_chapter(self, html, title=""): return f"正文 {html}"
+
+    monkeypatch.setattr(downloader_task, "Fetcher", FakeFetcher)
+    monkeypatch.setattr(downloader_task, "get_adapter", lambda _url: PagedAdapter())
+    monkeypatch.setattr(downloader_task, "cache_root", lambda: tmp_path / "cache")
+    monkeypatch.setattr(downloader_task, "load_rules", lambda _site: [])
+
+    messages = []
+    output = downloader_task.download_novel(
+        "https://paged.test/book", tmp_path, delay=0, chapter_workers=1,
+        callback=lambda stage, current, total, msg: messages.append(msg))
+    text = output.read_text(encoding="utf-8")
+
+    assert all(f"第{i}章" in text for i in range(1, 5))
+    assert any("已展開完整目錄" in m for m in messages)
+    assert any(m.startswith("[目錄分頁] 共抓取 1 頁") for m in messages)
+
+
+def test_catalog_pagination_stops_on_a_to_b_to_a_loop_with_no_new_chapters(monkeypatch, tmp_path):
+    """A→B→A 這種分頁循環,且 B 頁沒有任何新章節網址,必須立即停止,不能無窮抓取。"""
+    import downloader_task
+
+    fetch_log = []
+
+    class FakeFetcher:
+        def __init__(self, **_kwargs):
+            self.throttle = None
+
+        def get(self, url, **_kwargs):
+            fetch_log.append(url)
+            return url
+
+        def polite_sleep(self):
+            pass
+
+    class LoopyAdapter(SiteAdapter):
+        encoding = "utf-8"
+        domains = ["loopy.test"]
+        is_generic = False
+
+        def catalog_url(self, _url): return "page-a"
+        def meta_url(self, _url): return None
+
+        def parse_catalog(self, _html):
+            return BookInfo("循環測試", "", [Chapter("第1章", "chapter-1")])
+
+        def catalog_page_urls(self, _html, url):
+            return ["page-b"] if url == "page-a" else ["page-a"]
+
+        def parse_catalog_page(self, _html, _url):
+            # page-b 沒有任何新章節(和 page-a 的章節完全重複)
+            return BookInfo("", "", [Chapter("第1章", "chapter-1")])
+
+        def book_id(self, _url): return "loopy-test"
+        def chapter_source_url(self, _html, _url): return None
+        def next_page_url(self, _html, _url): return None
+        def parse_chapter(self, html, title=""): return f"正文 {html}"
+
+    monkeypatch.setattr(downloader_task, "Fetcher", FakeFetcher)
+    monkeypatch.setattr(downloader_task, "get_adapter", lambda _url: LoopyAdapter())
+    monkeypatch.setattr(downloader_task, "cache_root", lambda: tmp_path / "cache")
+    monkeypatch.setattr(downloader_task, "load_rules", lambda _site: [])
+
+    output = downloader_task.download_novel("https://loopy.test/book", tmp_path, delay=0, chapter_workers=1)
+
+    assert output.exists()
+    assert fetch_log.count("page-a") == 1  # 只在一開始抓一次目錄,不會被 B 的分頁連結帶回頭重抓
+    assert fetch_log.count("page-b") == 1
+
+
+def _merge_test_setup(monkeypatch, tmp_path, titles):
+    import downloader_task
+
+    class FakeFetcher:
+        def __init__(self, **_kwargs):
+            self.throttle = None
+
+        def get(self, url, **_kwargs):
+            return url
+
+        def polite_sleep(self):
+            pass
+
+    class SplitAdapter(SiteAdapter):
+        encoding = "utf-8"
+        domains = ["split.test"]
+        is_generic = False
+
+        def catalog_url(self, _url): return "catalog"
+        def meta_url(self, _url): return None
+
+        def parse_catalog(self, _html):
+            return BookInfo("拆頁測試", "", [Chapter(t, f"ch-{i}") for i, t in enumerate(titles, 1)])
+
+        def book_id(self, _url): return "split-test"
+        def chapter_source_url(self, _html, _url): return None
+        def next_page_url(self, _html, _url): return None
+        def parse_chapter(self, html, title=""): return f"正文 {html}"
+
+    monkeypatch.setattr(downloader_task, "Fetcher", FakeFetcher)
+    monkeypatch.setattr(downloader_task, "get_adapter", lambda _url: SplitAdapter())
+    monkeypatch.setattr(downloader_task, "cache_root", lambda: tmp_path / "cache")
+    monkeypatch.setattr(downloader_task, "load_rules", lambda _site: [])
+    return downloader_task
+
+
+def test_merged_split_chapters_use_a_separate_cache_namespace(monkeypatch, tmp_path):
+    """目錄把章節拆成多個項目、合併下載後,快取資料夾要換一個命名空間,
+    避免舊的(依合併前位置編號的)快取對不上合併後的新章節順序。
+    """
+    downloader_task = _merge_test_setup(
+        monkeypatch, tmp_path, ["第一章", "第一章(2)", "第二章"])
+
+    messages = []
+    output = downloader_task.download_novel(
+        "https://split.test/book", tmp_path, delay=0, chapter_workers=1,
+        callback=lambda stage, current, total, msg: messages.append(msg))
+
+    assert (tmp_path / "cache" / "split-test-merged").exists()
+    assert not (tmp_path / "cache" / "split-test").exists()
+    assert any(m.startswith("[合併分頁章節] 由 3 個目錄項目合併為 2 章") for m in messages)
+    text = output.read_text(encoding="utf-8")
+    assert "正文 ch-1" in text and "正文 ch-2" in text  # 合併後第一章的正文含 extra_urls(ch-2)
+
+
+def test_catalog_size_change_warns_about_possibly_stale_cache(monkeypatch, tmp_path):
+    """重跑時目錄章數變了,且已有快取檔案:必須提醒使用者章號可能對不上,不能默默沿用。"""
+    downloader_task = _merge_test_setup(monkeypatch, tmp_path, ["第一章", "第二章", "第三章"])
+    cache_dir = tmp_path / "cache" / "split-test"
+    cache_dir.mkdir(parents=True)
+    (cache_dir / "0001.txt").write_text("舊快取", encoding="utf-8")
+    downloader_task.save_progress(cache_dir, total_chapters=5)
+
+    messages = []
+    downloader_task.download_novel(
+        "https://split.test/book", tmp_path, delay=0, chapter_workers=1,
+        callback=lambda stage, current, total, msg: messages.append(msg))
+
+    assert any("[快取提醒]" in m and "5" in m and "3" in m for m in messages)

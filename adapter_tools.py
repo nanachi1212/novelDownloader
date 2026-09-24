@@ -56,9 +56,26 @@ def generate_adapter_template(url: str, module_name: str = "", display_name: str
     domain_literal = ", ".join(repr(d) for d in domains)
     return f'''"""User adapter for {label}.
 
-This auto-generated adapter pins the domain to GenericAdapter first. If the
-site needs special parsing, edit this file and override parse_catalog() or
-parse_chapter() using sites/base.py as the interface reference.
+This auto-generated adapter pins the domain to GenericAdapter first. GenericAdapter
+already tries several built-in free-novel-site templates automatically; if none of
+them match, fill in the CSS selectors below (browser devtools "Inspect" on the
+catalog/chapter page shows the right id/class) instead of rewriting the parser:
+
+  catalog_selector   -- CSS selector for the chapter-list container on the
+                        catalog page, e.g. "#catalog" or ".chapter-list"
+  content_selector   -- CSS selector for the chapter body container, e.g.
+                        "#content" or ".read-content"
+  remove_selectors   -- extra CSS selectors to strip from the chapter body
+                        before extracting text, e.g. (".ad", ".recommend")
+  expand_link_text   -- extra "show all chapters" link text if the catalog is
+                        collapsed and the built-in keywords do not match
+  catalog_skip_until -- extra keyword marking where the *full* chapter list
+                        starts, if the catalog page also shows a separate
+                        "latest chapters" mini-list before it
+
+Leave a field as None/() to keep GenericAdapter's default behaviour. If the
+site still needs custom logic, override parse_catalog()/parse_chapter() using
+sites/base.py as the interface reference.
 """
 from sites.generic import GenericAdapter
 
@@ -67,6 +84,12 @@ class {class_name}(GenericAdapter):
     domains = [{domain_literal}]
     encoding = None
     adapter_label = {label!r}
+
+    catalog_selector = None
+    content_selector = None
+    remove_selectors = ()
+    expand_link_text = None
+    catalog_skip_until = None
 '''
 
 

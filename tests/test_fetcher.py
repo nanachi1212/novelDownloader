@@ -2,10 +2,12 @@ from fetcher import FetchError, Fetcher
 
 
 class FakeResponse:
-    def __init__(self, body, status=200):
+    def __init__(self, body, status=200, headers=None):
         self.content = body.encode("utf-8")
         self.status_code = status
         self.headers = {"Content-Type": "text/html; charset=utf-8"}
+        if headers:
+            self.headers.update(headers)
 
 
 class FakeSession:
@@ -119,3 +121,81 @@ def test_successful_fetch_relaxes_backoff(monkeypatch):
 
     assert fetcher.get("https://example.test/ch1") == "正文"
     assert 2.0 <= fetcher.current_delay < 4.0  # 成功後開始回復，不會永遠卡在高延遲
+
+
+def test_soft_block_200_page_is_treated_as_rate_limit_and_not_returned(monkeypatch):
+    """200 但頁面其實是「訪問過於頻繁」之類的軟封鎖頁,不能被當成正文回傳。"""
+    monkeypatch.setattr("fetcher.time.sleep", lambda _seconds: None)
+    fetcher = Fetcher(delay=2.0)
+    fetcher.session = FakeSession([
+        FakeResponse("訪問過於頻繁,請稍後再試"),
+        FakeResponse("<html><body>真正的章節正文</body></html>"),
+    ])
+
+    assert fetcher.get("https://example.test/ch1") == "<html><body>真正的章節正文</body></html>"
+    assert len(fetcher.session.calls) == 2
+
+
+def test_soft_block_does_not_false_positive_on_short_real_content(monkeypatch):
+    """單純字數少的正文不能被誤判成軟封鎖頁(必須同時命中關鍵字才算)。"""
+    fetcher = Fetcher()
+    fetcher.session = FakeSession([FakeResponse("楔子。")])
+    assert fetcher.get("https://example.test/ch1") == "楔子。"
+
+
+def test_503_is_treated_like_429_backoff(monkeypatch):
+    monkeypatch.setattr("fetcher.time.sleep", lambda _seconds: None)
+    fetcher = Fetcher(delay=2.0)
+    fetcher.session = FakeSession([FakeResponse("service unavailable", status=503), FakeResponse("正文")])
+
+    assert fetcher.get("https://example.test/ch1") == "正文"
+
+
+def test_retry_after_seconds_header_extends_wait(monkeypatch):
+    slept = []
+    monkeypatch.setattr("fetcher.time.sleep", lambda seconds: slept.append(seconds))
+    fetcher = Fetcher(delay=2.0)
+    fetcher.session = FakeSession([
+        FakeResponse("slow", status=429, headers={"Retry-After": "10"}),
+        FakeResponse("正文"),
+    ])
+
+    assert fetcher.get("https://example.test/ch1") == "正文"
+    assert slept == [10.0]
+
+
+def test_retry_after_http_date_header_is_parsed(monkeypatch):
+    monkeypatch.setattr("fetcher.time.sleep", lambda _seconds: None)
+    import datetime
+    fixed_now = datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc)
+
+    class FixedDatetime(datetime.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed_now
+
+    monkeypatch.setattr("fetcher.datetime.datetime", FixedDatetime)
+    retry_at = "Thu, 01 Jan 2026 00:00:20 GMT"  # 固定 now 之後 20 秒
+    fetcher = Fetcher(delay=2.0)
+    fetcher.session = FakeSession([
+        FakeResponse("slow", status=503, headers={"Retry-After": retry_at}),
+        FakeResponse("正文"),
+    ])
+
+    assert fetcher.get("https://example.test/ch1") == "正文"
+    assert fetcher.current_delay <= 20.0
+
+
+def test_retry_after_is_clamped_to_max_backoff_delay(monkeypatch):
+    from fetcher import MAX_BACKOFF_DELAY
+
+    slept = []
+    monkeypatch.setattr("fetcher.time.sleep", lambda seconds: slept.append(seconds))
+    fetcher = Fetcher(delay=2.0)
+    fetcher.session = FakeSession([
+        FakeResponse("slow", status=429, headers={"Retry-After": "99999"}),
+        FakeResponse("正文"),
+    ])
+
+    assert fetcher.get("https://example.test/ch1") == "正文"
+    assert slept == [MAX_BACKOFF_DELAY]
