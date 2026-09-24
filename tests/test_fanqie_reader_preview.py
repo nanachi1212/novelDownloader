@@ -64,6 +64,21 @@ def test_import_creates_sanitized_item_isolated_preview_with_hashed_font(tmp_pat
     assert metadata["decoder_version"] is None and metadata["text_restored"] is False
 
 
+@pytest.mark.parametrize("suffix,signature,font_format", [
+    ("ttf", b"\x00\x01\x00\x00", "truetype"),
+    ("otf", b"OTTO", "opentype"),
+])
+def test_import_uses_browser_font_format_hint(tmp_path, suffix, signature, font_format):
+    page = _saved_reader(tmp_path)
+    assets = tmp_path / "chapter_files"
+    css = assets / "reader.css"
+    css.write_text(css.read_text(encoding="utf-8").replace("font.woff2", f"font.{suffix}"),
+                   encoding="utf-8")
+    (assets / f"font.{suffix}").write_bytes(signature + b"synthetic-font")
+    preview = import_reader_html(page, "999", "101", "第一章", tmp_path / "preview")
+    assert f"format('{font_format}')" in preview.preview_path.read_text(encoding="utf-8")
+
+
 def test_preview_status_rejects_missing_or_changed_font(tmp_path):
     page = _saved_reader(tmp_path)
     root = tmp_path / "preview"
@@ -177,6 +192,15 @@ def test_import_rejects_font_rules_for_a_different_scope(tmp_path):
                    "#reader-content .mapped {font-family:'WrongFont';}",
                    encoding="utf-8")
     with pytest.raises(ReaderImportError, match="章節段落使用不同字型"):
+        import_reader_html(page, "999", "101", "第一章", tmp_path / "preview")
+    assert not (tmp_path / "preview").exists()
+
+
+def test_import_rejects_unresolved_css_import(tmp_path):
+    page = _saved_reader(tmp_path)
+    css = tmp_path / "chapter_files" / "reader.css"
+    css.write_text("@import url('other.css');\n" + css.read_text(encoding="utf-8"), encoding="utf-8")
+    with pytest.raises(ReaderImportError, match="@import"):
         import_reader_html(page, "999", "101", "第一章", tmp_path / "preview")
     assert not (tmp_path / "preview").exists()
 

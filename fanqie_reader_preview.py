@@ -175,7 +175,10 @@ def _extract_css(soup: BeautifulSoup, html_path: Path) -> list[str]:
             blocks.append(stylesheet)
         except FileNotFoundError:
             continue
-    return [CSS_COMMENT_RE.sub("", block) for block in blocks]
+    cleaned = [CSS_COMMENT_RE.sub("", block) for block in blocks]
+    if any(re.search(r"(?:^|[;}])\s*@import\b", block, re.I) for block in cleaned):
+        raise ReaderImportError("保存頁面的 CSS 含 @import，無法確認完整正文字型。")
+    return cleaned
 
 
 def _closing_css_brace(block: str, opening: int) -> int:
@@ -664,6 +667,8 @@ def _preview_document(title: str, paragraphs: list[str], family: str, relative_f
                       weight: int = 400, style: str = "normal") -> str:
     safe_family = json.dumps(family, ensure_ascii=True)
     safe_font = html.escape(relative_font, quote=True)
+    font_format = {".woff": "woff", ".woff2": "woff2",
+                   ".ttf": "truetype", ".otf": "opentype"}[Path(relative_font).suffix.lower()]
     body = "\n".join(f"<p>{html.escape(text, quote=True).replace(chr(10), '<br>')}</p>" for text in paragraphs)
     original = f"https://fanqienovel.com/reader/{item_id}"
     font_spec = json.dumps(f"{style} {weight} 18px ")
@@ -673,7 +678,7 @@ def _preview_document(title: str, paragraphs: list[str], family: str, relative_f
 <html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; font-src 'self'; script-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
 <title>{html.escape(title)}</title><style>
-@font-face{{font-family:{safe_family};font-weight:{weight};font-style:{style};src:url('{safe_font}') format('{Path(relative_font).suffix[1:]}');font-display:block}}
+@font-face{{font-family:{safe_family};font-weight:{weight};font-style:{style};src:url('{safe_font}') format('{font_format}');font-display:block}}
 body{{max-width:44rem;margin:3rem auto;padding:0 1.2rem;background:#f6f1e8;color:#29241e;font:16px/1.6 system-ui,sans-serif}}
 main{{font:{style} {weight} 18px/2 {safe_family},serif}}
 p{{margin:0 0 1.2em;white-space:pre-wrap}} #font-status{{font:14px/1.5 sans-serif;color:#745}}
