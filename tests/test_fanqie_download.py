@@ -66,6 +66,10 @@ def test_fixed_tables_decode_only_known_private_use_positions():
     assert decode_chapter(RAW).mode == 0
     mode_one = decode_chapter("\ue3f6" * 30)
     assert (mode_one.mode, mode_one.text) == (1, "才" * 30)
+    short_ascii = chr(0xE3E8 + CHARSETS[0].index("D"))
+    assert decode_chapter(short_ascii, preferred_mode=0).text == "D"
+    with pytest.raises(DecodeFailed, match="DECODE_FAILED"):
+        decode_chapter(chr(0xE3E8 + CHARSETS[0].index("?")), preferred_mode=0)
     with pytest.raises(DecodeFailed, match="DECODE_FAILED"):
         decode_chapter("\uf000" * 30)
 
@@ -250,7 +254,8 @@ def test_same_count_directory_reorder_reuses_only_matching_item_ids(tmp_path, mo
 
 def test_resumed_short_pua_chapter_uses_persisted_mode(tmp_path, monkeypatch):
     chapter_calls = []
-    short_raw = chr(0xE3E8 + CHARSETS[0].index("人")) * 5
+    short_raw = chr(0xE3E8 + CHARSETS[0].index("人")) * 4
+    short_raw += chr(0xE3E8 + CHARSETS[0].index("D"))
 
     class FakeFetcher:
         def __init__(self, **_kwargs):
@@ -279,8 +284,8 @@ def test_resumed_short_pua_chapter_uses_persisted_mode(tmp_path, monkeypatch):
     result = downloader_task.download_novel(BOOK_URL, tmp_path / "out", delay=0,
                                             retries=1, start=2, end=2)
     assert chapter_calls == ["101", "202"]
-    assert "人人人人人" in result.read_text(encoding="utf-8")
-    assert (tmp_path / "cache" / BOOK_ID / "202.txt").read_text(encoding="utf-8") == "人人人人人"
+    assert "人人人人D" in result.read_text(encoding="utf-8")
+    assert (tmp_path / "cache" / BOOK_ID / "202.txt").read_text(encoding="utf-8") == "人人人人D"
 
 
 def test_transient_short_reader_body_retries_before_caching(tmp_path, monkeypatch):

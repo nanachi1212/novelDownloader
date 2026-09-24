@@ -26,6 +26,10 @@ MAX_PREVIEW_BYTES = 48 * 1024 * 1024
 SAVED_FONT_HOSTS = {"lf6-awef.bytetos.com", "lf3-awef.bytetos.com"}
 GATE_UI_IDS = {"bdturing-verify", "captcha-container", "login-dialog", "paywall"}
 GATE_ONLY_TEXT = {"人机验证", "人機驗證", "请先登录", "請先登入", "购买本章", "購買本章"}
+READER_SELECTORS = (
+    "#reader-content", "#readerContent", ".muye-reader-content",
+    "[class*='reader-content']", "[class*='readerContent']",
+)
 FONT_FACE_RE = re.compile(r"@font-face\s*\{([^}]+)\}", re.I | re.S)
 CSS_RULE_RE = re.compile(r"([^{}]+)\{([^{}]*)\}", re.S)
 URL_RE = re.compile(r"url\(\s*(['\"]?)(.*?)\1\s*\)", re.I)
@@ -242,6 +246,31 @@ def _conditional_font_affects_reader(conditional: list[str], reader_node: Tag,
     return False
 
 
+def _conditional_visibility_affects_saved_content(conditional: list[str], soup: BeautifulSoup) -> bool:
+    reader = next((node for selector in READER_SELECTORS
+                   if (node := soup.select_one(selector)) is not None), None)
+    nodes = []
+    if reader is not None:
+        nodes.extend([reader, *reader.parents, *reader.descendants])
+    for node in soup.find_all(True):
+        identifiers = [node.get("id", ""), *(node.get("class") or [])]
+        if (any(value.lower() in GATE_UI_IDS for value in identifiers if isinstance(value, str))
+                or node.name == "iframe" and "bdturing-verify" in (node.get("src") or "").lower()):
+            nodes.extend([node, *node.parents])
+    nodes = [node for node in nodes if isinstance(node, Tag)]
+    for block in conditional:
+        for selector_text, declarations in CSS_RULE_RE.findall(block):
+            if selector_text.lstrip().startswith("@") or not VISIBILITY_RE.search(declarations):
+                continue
+            for selector in selector_text.split(","):
+                if "::" in selector or re.search(
+                        r"(?<!:):(?:before|after|first-line|first-letter)\b", selector, re.I):
+                    continue
+                if any(_selector_matches(selector, node) for node in nodes):
+                    return True
+    return False
+
+
 def _is_inert_node(node: Tag, visibility_rules=()) -> bool:
     ancestors = [ancestor for ancestor in (node, *node.parents) if isinstance(ancestor, Tag)]
     visibility = "visible"
@@ -261,11 +290,7 @@ def _is_inert_node(node: Tag, visibility_rules=()) -> bool:
 
 
 def _reader_body(soup: BeautifulSoup, visibility_rules=()):
-    selectors = (
-        "#reader-content", "#readerContent", ".muye-reader-content",
-        "[class*='reader-content']", "[class*='readerContent']",
-    )
-    for selector in selectors:
+    for selector in READER_SELECTORS:
         node = soup.select_one(selector)
         if node:
             paragraphs = []
@@ -752,6 +777,8 @@ def import_reader_html(source_path, book_id: str, item_id: str, title: str, prev
     soup = BeautifulSoup(raw, "html.parser", from_encoding="utf-8")
     _validate_identity(soup, str(book_id), str(item_id))
     css, conditional_css = _separate_conditional_css(_extract_css(soup, source_path))
+    if _conditional_visibility_affects_saved_content(conditional_css, soup):
+        raise ReaderImportError("正文或驗證視窗有條件式 CSS 可見性規則，無法安全確認保存頁面。")
     visibility_rules = _visibility_rules(css)
     content_node, paragraph_nodes = _reader_body(soup, visibility_rules)
     paragraphs = _paragraph_text(content_node, visibility_rules)

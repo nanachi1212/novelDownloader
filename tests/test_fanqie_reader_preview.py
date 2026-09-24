@@ -549,6 +549,17 @@ def test_scoped_font_rule_is_not_flattened_into_global_cascade(tmp_path):
         import_reader_html(page, "999", "101", "第一章", tmp_path / "preview")
 
 
+def test_conditional_visibility_rule_on_reader_fails_closed(tmp_path):
+    page = _saved_reader(tmp_path)
+    page.write_text(page.read_text(encoding="utf-8").replace(
+        "<p>第二段", '<p class="hidden">第二段'), encoding="utf-8")
+    css = tmp_path / "chapter_files" / "reader.css"
+    css.write_text(css.read_text(encoding="utf-8")
+                   + "@media screen { .hidden { display:none; } }", encoding="utf-8")
+    with pytest.raises(ReaderImportError, match="條件式 CSS 可見性"):
+        import_reader_html(page, "999", "101", "第一章", tmp_path / "preview")
+
+
 def test_unrelated_conditional_font_rule_does_not_override_reader(tmp_path):
     page = _saved_reader(tmp_path)
     css = tmp_path / "chapter_files" / "reader.css"
