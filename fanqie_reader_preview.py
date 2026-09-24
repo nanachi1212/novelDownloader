@@ -291,12 +291,11 @@ def _has_gate_ui(soup: BeautifulSoup, paragraphs: list[str], visibility_rules=()
         if (meta.get("name") or "").lower() == "x-vc-bdturing-parameters":
             return True
     for node in soup.find_all(True):
-        if _is_inert_node(node, visibility_rules):
-            continue
         identifiers = [node.get("id", ""), *(node.get("class") or [])]
-        if any(value.lower() in GATE_UI_IDS for value in identifiers if isinstance(value, str)):
-            return True
-        if node.name == "iframe" and "bdturing-verify" in (node.get("src") or "").lower():
+        possible_gate = any(value.lower() in GATE_UI_IDS for value in identifiers
+                            if isinstance(value, str)) or (
+            node.name == "iframe" and "bdturing-verify" in (node.get("src") or "").lower())
+        if possible_gate and not _is_inert_node(node, visibility_rules):
             return True
     stripped = [paragraph.strip() for paragraph in paragraphs if paragraph.strip()]
     return len(stripped) <= 2 and bool(stripped) and all(text in GATE_ONLY_TEXT for text in stripped)

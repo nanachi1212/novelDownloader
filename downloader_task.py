@@ -305,6 +305,10 @@ def fetch_parsed_chapter(fetcher, adapter, chapter, retries: int, on_retry=None)
             return content
         except (FetchError, ValueError) as e:
             last_err = e
+        except Exception as e:
+            if not adapter.retryable_parse_error(e):
+                raise
+            last_err = ValueError(str(e))
     raise last_err
 
 

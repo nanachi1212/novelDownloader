@@ -684,6 +684,17 @@ def test_stylesheet_visible_override_keeps_gate_active(tmp_path):
         import_reader_html(page, "999", "101", "第一章", tmp_path / "preview")
 
 
+def test_unrelated_input_visibility_selector_does_not_block_import(tmp_path):
+    page = _saved_reader(tmp_path)
+    css = tmp_path / "chapter_files" / "reader.css"
+    css.write_text(css.read_text(encoding="utf-8")
+                   + 'input[type="checkbox"] {display:none}', encoding="utf-8")
+    page.write_text(page.read_text(encoding="utf-8").replace(
+        "</body>", '<input type="checkbox"></body>'), encoding="utf-8")
+    preview = import_reader_html(page, "999", "101", "第一章", tmp_path / "preview")
+    assert preview.paragraph_count == 2
+
+
 def test_visibility_restored_under_hidden_parent_keeps_gate_active(tmp_path):
     page = _saved_reader(tmp_path)
     css = tmp_path / "chapter_files" / "reader.css"

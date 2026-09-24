@@ -300,6 +300,9 @@ class FanqieAdapter(SiteAdapter):
             write_json(Path(cache) / "fanqie_decoder.json",
                        {"book_id": self._book_id, "mode": self._decoder_mode})
 
+    def retryable_parse_error(self, error):
+        return isinstance(error, FanqieError) and not isinstance(error, AccessVerificationRequired)
+
     def chapter_source_url(self, html, url):
         match = re.fullmatch(r"https://fanqienovel\.com/reader/(\d+)", url)
         if not match:

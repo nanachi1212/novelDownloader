@@ -283,6 +283,37 @@ def test_resumed_short_pua_chapter_uses_persisted_mode(tmp_path, monkeypatch):
     assert (tmp_path / "cache" / BOOK_ID / "202.txt").read_text(encoding="utf-8") == "人人人人人"
 
 
+def test_transient_short_reader_body_retries_before_caching(tmp_path, monkeypatch):
+    chapter_calls = []
+
+    class FakeFetcher:
+        def __init__(self, **_kwargs):
+            self.last_response_headers = {}
+            self.last_status_code = 200
+
+        def get(self, url, **_kwargs):
+            if "/page/" in url:
+                return _meta()
+            if "/directory/detail" in url:
+                return _directory(_item())
+            chapter_calls.append(url)
+            content = "<p>短</p>" if len(chapter_calls) == 1 else f"<p>{RAW}</p>"
+            return _reader(content=content, chapterWordNumber=40, **PUBLIC)
+
+        def polite_sleep(self):
+            pass
+
+    monkeypatch.setattr(downloader_task, "Fetcher", FakeFetcher)
+    monkeypatch.setattr(downloader_task, "cache_root", lambda: tmp_path / "cache")
+    monkeypatch.setattr(downloader_task, "load_rules", lambda _site: [])
+    monkeypatch.setattr(downloader_task.time, "sleep", lambda _seconds: None)
+    output = downloader_task.download_novel(BOOK_URL, tmp_path / "out", delay=0,
+                                            retries=2, end=1)
+    assert chapter_calls == [READER_URL, READER_URL]
+    assert "人在这里" in output.read_text(encoding="utf-8")
+    assert "短" not in (tmp_path / "cache" / BOOK_ID / f"{ITEM_ID}.txt").read_text(encoding="utf-8")
+
+
 def test_merged_chapter_cache_key_tracks_all_item_ids():
     from sites.base import Chapter
     adapter = FanqieAdapter()

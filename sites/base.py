@@ -80,6 +80,10 @@ class SiteAdapter:
     def save_cache_state(self, cache) -> None:
         """Persist optional adapter state before a parsed chapter is cached."""
 
+    def retryable_parse_error(self, error: Exception) -> bool:
+        """Identify site parser errors eligible for the chapter retry loop."""
+        return False
+
     def chapter_source_url(self, html: str, url: str):
         """章節頁以 JavaScript 載入正文時,回傳真正正文 URL;一般網站回傳 None。"""
         return None
