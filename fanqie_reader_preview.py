@@ -29,7 +29,7 @@ GATE_ONLY_TEXT = {"人机验证", "人機驗證", "请先登录", "請先登入"
 FONT_FACE_RE = re.compile(r"@font-face\s*\{([^}]+)\}", re.I | re.S)
 CSS_RULE_RE = re.compile(r"([^{}]+)\{([^{}]*)\}", re.S)
 URL_RE = re.compile(r"url\(\s*(['\"]?)(.*?)\1\s*\)", re.I)
-FAMILY_RE = re.compile(r'''font-family\s*:\s*("(?:\\.|[^"])*"|'(?:\\.|[^'])*'|[^;}]+)''', re.I)
+FAMILY_RE = re.compile(r'''(?:^|;)\s*font-family\s*:\s*("(?:\\.|[^"])*"|'(?:\\.|[^'])*'|[^;}]+)''', re.I)
 CSS_COMMENT_RE = re.compile(r"/\*.*?\*/", re.S)
 CONDITIONAL_CSS_RE = re.compile(
     r"@(?:media|supports|container|layer|document|keyframes|-webkit-keyframes)\b[^{}]*\{", re.I
@@ -240,16 +240,22 @@ def _conditional_font_affects_reader(conditional: list[str], reader_node: Tag,
 
 
 def _is_inert_node(node: Tag, visibility_rules=()) -> bool:
-    return any(
-        ancestor.name in {"script", "style", "template", "noscript"}
-        or ancestor.has_attr("hidden") or ancestor.has_attr("inert")
-        or ancestor.get("aria-hidden") == "true"
-        or bool(re.search(r"(?:display\s*:\s*none|visibility\s*:\s*hidden)",
-                          ancestor.get("style", ""), re.I))
-        or (_css_visibility_value(ancestor, visibility_rules, "display") == "none")
-        or (_css_visibility_value(ancestor, visibility_rules, "visibility") == "hidden")
-        for ancestor in (node, *node.parents) if isinstance(ancestor, Tag)
-    )
+    ancestors = [ancestor for ancestor in (node, *node.parents) if isinstance(ancestor, Tag)]
+    visibility = "visible"
+    for ancestor in reversed(ancestors):
+        if (ancestor.name in {"script", "style", "template", "noscript"}
+                or ancestor.has_attr("hidden") or ancestor.has_attr("inert")
+                or ancestor.get("aria-hidden") == "true"
+                or _css_visibility_value(ancestor, visibility_rules, "display") == "none"):
+            return True
+        value = _css_visibility_value(ancestor, visibility_rules, "visibility")
+        if value in {"visible", "hidden", "collapse"}:
+            visibility = value
+        elif value == "initial":
+            visibility = "visible"
+        elif value not in {"", "inherit", "unset"}:
+            raise ReaderImportError("無法確認保存頁面的 CSS 可見性，未建立預覽。")
+    return visibility != "visible"
 
 
 def _reader_body(soup: BeautifulSoup, visibility_rules=()):
@@ -260,11 +266,24 @@ def _reader_body(soup: BeautifulSoup, visibility_rules=()):
     for selector in selectors:
         node = soup.select_one(selector)
         if node:
-            paragraphs = [p for p in node.find_all("p")
-                          if not _is_inert_node(p, visibility_rules) and p.get_text()]
+            paragraphs = []
+            for p in node.find_all("p"):
+                if _is_inert_node(p, visibility_rules):
+                    if _has_visible_descendant_text(p, visibility_rules):
+                        raise ReaderImportError("正文含部分可見的隱藏段落，無法安全建立預覽。")
+                    continue
+                if p.get_text():
+                    paragraphs.append(p)
             if paragraphs:
                 return node, paragraphs
     raise ReaderImportError("保存頁面找不到含正文段落的閱讀器區塊，沒有匯入任何資料。")
+
+
+def _has_visible_descendant_text(node: Tag, visibility_rules=()) -> bool:
+    return any(isinstance(child, NavigableString) and str(child).strip()
+               and isinstance(child.parent, Tag)
+               and not _is_inert_node(child.parent, visibility_rules)
+               for child in node.descendants)
 
 
 def _has_gate_ui(soup: BeautifulSoup, paragraphs: list[str], visibility_rules=()) -> bool:
@@ -381,7 +400,7 @@ def _first_family(match) -> str:
     return _font_family_value(match.group(1))
 
 
-FONT_ATTRIBUTE_RE = re.compile(r"(?<![\w-])(font-family|font-weight|font-style|font)\s*:\s*([^;]+)", re.I)
+FONT_ATTRIBUTE_RE = re.compile(r"(?:^|;)\s*(font-family|font-weight|font-style|font)\s*:\s*([^;]+)", re.I)
 VISIBILITY_RE = re.compile(r"(?:^|;)\s*(display|visibility)\s*:\s*([^;]+)", re.I)
 FONT_SIZE_RE = re.compile(
     r"^(?:\d+(?:\.\d+)?(?:px|pt|em|rem|%)|xx-small|x-small|small|medium|large|x-large|xx-large)(?:/\S+)?$",
@@ -535,14 +554,14 @@ def _font_style(value: str) -> str:
 
 
 def _face_matches(face: str, weight: int, style: str) -> bool:
-    declared_weight = re.search(r"font-weight\s*:\s*([^;}]+)", face, re.I)
+    declared_weight = re.search(r"(?:^|;)\s*font-weight\s*:\s*([^;}]+)", face, re.I)
     weight_value = declared_weight.group(1).strip().lower() if declared_weight else "normal"
     parts = weight_value.split()
     if len(parts) == 2 and all(re.fullmatch(r"[1-9]00", part) for part in parts):
         weight_matches = int(parts[0]) <= weight <= int(parts[1])
     else:
         weight_matches = _font_weight(weight_value) == weight
-    declared_style = re.search(r"font-style\s*:\s*([^;}]+)", face, re.I)
+    declared_style = re.search(r"(?:^|;)\s*font-style\s*:\s*([^;}]+)", face, re.I)
     style_value = declared_style.group(1).strip().lower() if declared_style else "normal"
     return weight_matches and _font_style(style_value) == style
 
@@ -620,7 +639,11 @@ def _paragraph_text(node, visibility_rules=()) -> list[str]:
             if isinstance(child, NavigableString):
                 output.append(str(child))
             elif isinstance(child, Tag):
-                if child.name in {"script", "style", "iframe", "object"} or _is_inert_node(child, visibility_rules):
+                if child.name in {"script", "style", "iframe", "object"}:
+                    continue
+                if _is_inert_node(child, visibility_rules):
+                    if _has_visible_descendant_text(child, visibility_rules):
+                        raise ReaderImportError("正文含部分可見的隱藏文字，無法安全建立預覽。")
                     continue
                 if child.name == "br":
                     output.append("\n")

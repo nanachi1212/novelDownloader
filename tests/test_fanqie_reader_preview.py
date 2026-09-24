@@ -383,6 +383,19 @@ def test_import_respects_css_specificity_for_reader_weight(tmp_path):
     assert preview.font_sha256 == hashlib.sha256(medium).hexdigest()
 
 
+def test_custom_property_text_is_not_a_font_declaration(tmp_path):
+    page = _saved_reader(tmp_path)
+    assets = tmp_path / "chapter_files"
+    (assets / "bold.woff2").write_bytes(b"wOF2other-font")
+    (assets / "reader.css").write_text(
+        "@font-face {font-family:MappedFont;font-weight:400;src:url('font.woff2');}"
+        "@font-face {font-family:MappedFont;font-weight:700;src:url('bold.woff2');}"
+        "#reader-content {font-family:MappedFont;font-weight:400;"
+        "--fallback: font-weight:700; --family: font-family:OtherFont;}", encoding="utf-8")
+    preview = import_reader_html(page, "999", "101", "第一章", tmp_path / "preview")
+    assert preview.font_sha256 == hashlib.sha256(FONT_BYTES).hexdigest()
+
+
 def test_id_specificity_outweighs_many_classes(tmp_path):
     page = _saved_reader(tmp_path)
     class_names = " ".join(f"c{i}" for i in range(12))
@@ -649,6 +662,32 @@ def test_stylesheet_visible_override_keeps_gate_active(tmp_path):
     page.write_text(page.read_text(encoding="utf-8").replace(
         "</body>", '<div id="login-dialog" class="hidden"></div></body>'), encoding="utf-8")
     with pytest.raises(ReaderImportError, match="人機驗證要求"):
+        import_reader_html(page, "999", "101", "第一章", tmp_path / "preview")
+
+
+def test_visibility_restored_under_hidden_parent_keeps_gate_active(tmp_path):
+    page = _saved_reader(tmp_path)
+    css = tmp_path / "chapter_files" / "reader.css"
+    css.write_text(css.read_text(encoding="utf-8")
+                   + ".hidden {visibility:hidden} #login-dialog {visibility:visible}",
+                   encoding="utf-8")
+    page.write_text(page.read_text(encoding="utf-8").replace(
+        "</body>", '<div class="hidden"><div id="login-dialog"></div></div></body>'),
+        encoding="utf-8")
+    with pytest.raises(ReaderImportError, match="人機驗證要求"):
+        import_reader_html(page, "999", "101", "第一章", tmp_path / "preview")
+
+
+def test_partial_visibility_in_paragraph_fails_closed(tmp_path):
+    page = _saved_reader(tmp_path)
+    css = tmp_path / "chapter_files" / "reader.css"
+    css.write_text(css.read_text(encoding="utf-8")
+                   + ".hidden {visibility:hidden} .shown {visibility:visible}",
+                   encoding="utf-8")
+    page.write_text(page.read_text(encoding="utf-8").replace(
+        "<p>第二段", '<p>第二段<span class="hidden"><span class="shown">可見字</span></span>'),
+        encoding="utf-8")
+    with pytest.raises(ReaderImportError, match="部分可見"):
         import_reader_html(page, "999", "101", "第一章", tmp_path / "preview")
 
 
