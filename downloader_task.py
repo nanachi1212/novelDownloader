@@ -10,7 +10,7 @@ import zipfile
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlparse
 
 from fetcher import FetchError, Fetcher
 from sites import get_adapter
@@ -114,9 +114,29 @@ def order_catalog_pages(pages):
     if len({template(url) for url, _ in pages}) == 1:
         return sorted(pages, key=lambda page: [int(n) for n in re.findall(r"\d+", page[0])])
 
+    # 查詢參數型分頁可能省略 page=1,例如 ?page=2、(無參數)、?page=3。
+    parsed = [urlparse(url) for url, _ in pages]
+    if len({(p.scheme, p.netloc, p.path, p.fragment) for p in parsed}) == 1:
+        known_page_keys = {"page", "p", "page_no", "pageno", "page_num", "page_number"}
+        queries = [parse_qsl(p.query, keep_blank_values=True) for p in parsed]
+        for key in known_page_keys:
+            page_values, base_queries = [], []
+            valid = True
+            for query in queries:
+                values = [value for name, value in query if name.lower() == key]
+                if len(values) > 1 or (values and not values[0].isdigit()):
+                    valid = False
+                    break
+                page_values.append(int(values[0]) if values else None)
+                base_queries.append(sorted((name, value) for name, value in query if name.lower() != key))
+            if (valid and len(set(map(tuple, base_queries))) == 1
+                    and any(value is None for value in page_values)
+                    and any(value is not None for value in page_values)):
+                ordered = sorted(zip(page_values, pages), key=lambda pair: pair[0] or 1)
+                return [item for _number, item in ordered]
+
     # 常見的第 1 頁使用 index.html,後續頁才使用 index_2.html、index_3.html。
     # 將只有末尾分頁數字不同的路徑視為同一組,並把無後綴頁面排在第 1 頁。
-    parsed = [urlparse(url) for url, _ in pages]
     if len({(p.scheme, p.netloc, p.query, p.fragment) for p in parsed}) != 1:
         return pages
     page_paths = []
@@ -376,7 +396,10 @@ def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
 
     catalog_html = fetcher.get(catalog_url, retries=retries)
     full_url = adapter.full_catalog_url(catalog_html, catalog_url)
+    collapsed_book = None
     if full_url and full_url != catalog_url:
+        if getattr(adapter, "is_generic", False) and not title:
+            collapsed_book = adapter.parse_catalog_page(catalog_html, catalog_url)
         callback("catalog", 0, 1, "[目錄] 已展開完整目錄")
         catalog_url = full_url
         fetcher.polite_sleep()
@@ -386,6 +409,11 @@ def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
     # 需要知道實際抓到的是哪個網址,才能正確解析頁面上的相對連結
     # (catalog_url() 當初記下的是展開前的舊網址)。
     book = adapter.parse_catalog_page(catalog_html, catalog_url)
+    if collapsed_book:
+        if not book.title or book.title == "未知書名":
+            book.title = collapsed_book.title
+        if not book.author:
+            book.author = collapsed_book.author
     template_name = getattr(adapter, "template_name", None)
     if template_name:
         callback("catalog", 0, 1, f"[自動偵測] 目錄套用內建模板: {template_name}")

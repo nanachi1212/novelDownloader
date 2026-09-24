@@ -854,7 +854,11 @@ def test_catalog_expansion_resolves_relative_links_against_the_expanded_url(monk
             return url
 
     pages = {
-        "https://expand.test/n/1": '<a href="/n/1/full.html">查看全部章節</a>',
+        "https://expand.test/n/1": (
+            '<meta property="og:novel:book_name" content="Expanded Metadata Fallback">'
+            '<meta property="og:novel:author" content="Preview Author">'
+            '<a href="/n/1/full.html">查看全部章節</a>'
+        ),
         "https://expand.test/n/1/full.html": "".join(
             f'<a href="{i}.html">第{i}章</a>' for i in range(1, 6)),
     }
@@ -876,10 +880,12 @@ def test_catalog_expansion_resolves_relative_links_against_the_expanded_url(monk
     monkeypatch.setattr(downloader_task, "cache_root", lambda: tmp_path / "cache")
     monkeypatch.setattr(downloader_task, "load_rules", lambda _site: [])
 
-    downloader_task.download_novel("https://expand.test/n/1", tmp_path, delay=0, chapter_workers=1)
+    output = downloader_task.download_novel(
+        "https://expand.test/n/1", tmp_path, delay=0, chapter_workers=1)
 
     expected = {f"https://expand.test/n/1/{i}.html" for i in range(1, 6)}
     assert expected.issubset(set(fetched_urls))
+    assert output.name == "Expanded Metadata Fallback.txt"
     wrong = {f"https://expand.test/n/{i}.html" for i in range(1, 6)}  # 用舊網址解析會得到這種錯誤路徑
     assert not (wrong & set(fetched_urls))
 
@@ -934,6 +940,17 @@ def test_order_catalog_pages_places_unnumbered_page_one_before_numbered_pages():
         ("https://x.test/book/index_2.html", ["b"]),
         ("https://x.test/book/index.html", ["a"]),
         ("https://x.test/book/index_3.html", ["c"]),
+    ]
+    assert [chapters for _url, chapters in order_catalog_pages(pages)] == [["a"], ["b"], ["c"]]
+
+
+def test_order_catalog_pages_places_unnumbered_query_page_one_first():
+    from downloader_task import order_catalog_pages
+
+    pages = [
+        ("https://x.test/catalog?page=2", ["b"]),
+        ("https://x.test/catalog", ["a"]),
+        ("https://x.test/catalog?page=3", ["c"]),
     ]
     assert [chapters for _url, chapters in order_catalog_pages(pages)] == [["a"], ["b"], ["c"]]
 
