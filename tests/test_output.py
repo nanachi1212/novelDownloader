@@ -322,6 +322,19 @@ def test_merge_split_chapters_does_not_merge_non_consecutive_parts():
     assert [c.title for c in merged] == ["第一章(1)", "第一章(3)"]
 
 
+def test_merge_split_chapters_does_not_merge_when_part_one_is_missing():
+    """第 1 段不在(目錄漏抓或解析失敗)時,不能從第 2 段開始合併,那樣會把
+    缺頭的內容悄悄藏成一個看似完整的章節(Codex review 抓到的 bug)。
+    """
+    chapters = [
+        Chapter("第一章(2)", "https://example/ch1_2"),
+        Chapter("第一章(3)", "https://example/ch1_3"),
+    ]
+    merged, happened = merge_split_chapters(chapters)
+    assert happened is False
+    assert [c.title for c in merged] == ["第一章(2)", "第一章(3)"]
+
+
 def test_merge_split_chapters_does_not_merge_different_base_titles():
     chapters = [
         Chapter("第一章(1)", "https://example/ch1"),

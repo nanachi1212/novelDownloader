@@ -246,6 +246,20 @@ def test_catalog_page_urls_accepts_bare_more_link_inside_pagination_marker():
     ]
 
 
+def test_pagination_marker_rejects_bare_page_layout_class():
+    """<body class="page"> 這種版面標記不是分頁容器,不能讓底下所有元素都被
+    當成分頁控制項(Codex review 抓到的 bug:bare "page" 子字串比對太寬)。
+    """
+    adapter = GenericAdapter()
+    html = (
+        '<body class="page">'
+        '<select id="fontsize"><option value="16">16px</option><option value="18">18px</option></select>'
+        '<a href="/promo/more.html">更多</a>'
+        '</body>'
+    )
+    assert adapter.catalog_page_urls(html, "https://example.test/n/1") == []
+
+
 def test_catalog_page_urls_select_pagination_excludes_current_page():
     adapter = GenericAdapter()
     html = ('<div class="pagination"><select><option value="/list_1.html">1</option>'

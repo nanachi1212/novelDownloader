@@ -81,6 +81,9 @@ LOOSE_MORE_PAGE_TEXT = re.compile(r"^(更多|載入更多|加载更多)$")
 NON_CHAPTER_LINK_TEXT = re.compile(
     r"^(上一?[页頁]|下一?[页頁]|首[页頁]|尾[页頁]|末[页頁]|更多|載入更多|加载更多|\d+)$"
 )
+# 分頁容器的 class/id 必須整個 token 相符,不接受 bare "page"(太容易誤中版面
+# 標記,如 <body class="page">、#page-wrapper)。
+PAGER_TOKENS = {"pager", "pagination", "pages", "pagelist", "page-list", "pagenav", "page-nav"}
 
 # 防盜/反爬安全網
 HIDDEN_STYLE_RE = re.compile(r"display\s*:\s*none|visibility\s*:\s*hidden", re.I)
@@ -159,13 +162,23 @@ class GenericAdapter(SiteAdapter):
             seen.add(nxt)
             return nxt
 
-        def _is_pagination_marked(el):
-            for node in (el, *el.parents):
-                if not hasattr(node, "get"):
-                    continue
-                marker = f'{" ".join(node.get("class", []))} {node.get("id", "")}'.lower()
-                if "page" in marker or "pagination" in marker:
+        def _has_pager_token(el):
+            # 用「整個 class/id token」比對,不是子字串:bare "page" 常出現在
+            # <body class="page">、#page-wrapper 這類跟分頁無關的外層版面標記,
+            # 子字串比對會把它們也誤判成分頁容器。
+            classes = [c.lower() for c in (el.get("class") or [])]
+            node_id = (el.get("id") or "").lower()
+            return any(c in PAGER_TOKENS for c in classes) or node_id in PAGER_TOKENS
+
+        def _is_pagination_marked(el, max_depth=4):
+            # 只往上找幾層(附近的分頁容器),不要一路走到 body/html,
+            # 避免頁面最外層的版面標記把整頁所有元素都算成分頁控制項。
+            node, depth = el, 0
+            while node is not None and depth <= max_depth:
+                if hasattr(node, "get") and _has_pager_token(node):
                     return True
+                node = getattr(node, "parent", None)
+                depth += 1
             return False
 
         for a in soup.find_all("a", href=True):
@@ -193,8 +206,7 @@ class GenericAdapter(SiteAdapter):
                     found.append(nxt)
 
         for el in soup.find_all(True):
-            marker = f'{" ".join(el.get("class", []))} {el.get("id", "")}'.lower()
-            if "page" not in marker and "pagination" not in marker:
+            if not _has_pager_token(el):
                 continue
             for a in el.find_all("a", href=True):
                 if (a.get_text(strip=True) or "").isdigit():

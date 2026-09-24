@@ -109,6 +109,12 @@ def merge_split_chapters(chapters):
     i, n = 0, len(chapters)
     while i < n:
         base, part = _split_chapter_suffix(chapters[i].title)
+        if part not in (None, 1):
+            # 第 1 段不在(目錄漏抓或解析失敗),不能從第 2/3 段開始假裝合併出
+            # 一個「完整」章節,那樣會把缺頭的內容悄悄藏起來。
+            merged.append(chapters[i])
+            i += 1
+            continue
         group = [chapters[i]]
         expected = (part or 1) + 1
         j = i + 1
