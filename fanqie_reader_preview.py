@@ -24,7 +24,7 @@ READER_ID_RE = re.compile(r"/reader/(\d+)")
 FONT_FACE_RE = re.compile(r"@font-face\s*\{([^}]+)\}", re.I | re.S)
 CSS_RULE_RE = re.compile(r"([^{}]+)\{([^{}]*)\}", re.S)
 URL_RE = re.compile(r"url\(\s*(['\"]?)(.*?)\1\s*\)", re.I)
-FAMILY_RE = re.compile(r"font-family\s*:\s*(['\"]?)([^;'\"]+)\1", re.I)
+FAMILY_RE = re.compile(r'''font-family\s*:\s*("(?:\\.|[^"])*"|'(?:\\.|[^'])*'|[^;}]+)''', re.I)
 
 
 class ReaderImportError(ValueError):
@@ -169,6 +169,8 @@ def _selector_matches(selector: str, node) -> bool:
         return False
 
     def matches(part, candidate):
+        if not re.fullmatch(r"(?:[a-zA-Z][\w-]*|\*|#[\w-]+|\.[\w-])+", part):
+            return False
         tag = re.match(r"^[a-zA-Z][\w-]*", part)
         if tag and candidate.name != tag.group(0).lower():
             return False
@@ -191,18 +193,27 @@ def _selector_matches(selector: str, node) -> bool:
     return True
 
 
+def _first_family(match) -> str:
+    value = match.group(1).strip()
+    if value[:1] in {"'", '"'} and value[-1:] == value[:1]:
+        return re.sub(r"\\([\\'\"])", r"\1", value[1:-1]).strip()
+    return value.split(",", 1)[0].strip().strip("'\"")
+
+
 def _declared_font(node, css_blocks: list[str]) -> str:
     inline = node.get("style", "")
     inline_match = FAMILY_RE.search(inline)
     if inline_match:
-        return inline_match.group(2).strip()
+        return _first_family(inline_match)
     selected = ""
     for block in css_blocks:
         for selector_text, declarations in CSS_RULE_RE.findall(block):
+            if selector_text.lstrip().startswith("@"):
+                continue
             if any(_selector_matches(selector, node) for selector in selector_text.split(",")):
                 family = FAMILY_RE.search(declarations)
                 if family:
-                    selected = family.group(2).strip()
+                    selected = _first_family(family)
     return selected
 
 
@@ -211,7 +222,7 @@ def _font_resource(css_blocks: list[str], family: str, html_path: Path) -> tuple
     for block in css_blocks:
         for face in FONT_FACE_RE.findall(block):
             declared = FAMILY_RE.search(face)
-            if not declared or declared.group(2).strip().strip("\"") != family:
+            if not declared or _first_family(declared) != family:
                 continue
             src = URL_RE.search(face)
             if not src:

@@ -93,6 +93,27 @@ def test_import_rejects_font_rules_for_a_different_scope(tmp_path):
     assert not (tmp_path / "preview").exists()
 
 
+def test_unused_font_face_is_not_treated_as_an_applied_reader_font(tmp_path):
+    page = _saved_reader(tmp_path)
+    css = page.parent / "chapter_files" / "reader.css"
+    css.write_text("@font-face {font-family:'UnusedFont';src:url('font.woff2');}", encoding="utf-8")
+    with pytest.raises(ReaderImportError, match="無法確認正文實際使用的字型"):
+        import_reader_html(page, "999", "101", "第一章", tmp_path / "preview")
+    assert not (tmp_path / "preview").exists()
+
+
+@pytest.mark.parametrize("declaration", ["MappedFont, serif", "'MappedFont', serif"])
+def test_import_resolves_first_family_from_fallback_list(tmp_path, declaration):
+    page = _saved_reader(tmp_path)
+    css = page.parent / "chapter_files" / "reader.css"
+    css.write_text(
+        f"@font-face {{font-family:'MappedFont';src:url('font.woff2');}}"
+        f"#reader-content {{font-family:{declaration};}}", encoding="utf-8"
+    )
+    preview = import_reader_html(page, "999", "101", "第一章", tmp_path / "preview")
+    assert preview.font_family == "MappedFont"
+
+
 def test_import_rejects_missing_or_mismatched_font_without_publishing_cache(tmp_path):
     missing = _saved_reader(tmp_path, font=False)
     with pytest.raises(ReaderImportError, match="找不到瀏覽器保存的 CSS 或字型資源"):
