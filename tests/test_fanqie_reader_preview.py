@@ -466,6 +466,19 @@ def test_conditional_font_rule_for_reader_fails_closed(tmp_path):
     assert not (tmp_path / "preview").exists()
 
 
+def test_conditional_font_rule_on_intermediate_reader_container_fails_closed(tmp_path):
+    page = _saved_reader(tmp_path)
+    source = page.read_text(encoding="utf-8")
+    source = source.replace("<p>原字元", '<div class="body"><p>原字元')
+    source = source.replace("</p><p>第二段", "</p></div><p>第二段")
+    page.write_text(source, encoding="utf-8")
+    css = tmp_path / "chapter_files" / "reader.css"
+    css.write_text(css.read_text(encoding="utf-8") +
+                   "@media screen { .body {font-weight:700;} }", encoding="utf-8")
+    with pytest.raises(ReaderImportError, match="條件式 CSS"):
+        import_reader_html(page, "999", "101", "第一章", tmp_path / "preview")
+
+
 def test_unrelated_conditional_font_rule_does_not_override_reader(tmp_path):
     page = _saved_reader(tmp_path)
     css = tmp_path / "chapter_files" / "reader.css"

@@ -222,7 +222,8 @@ def _separate_conditional_css(css_blocks: list[str]) -> tuple[list[str], list[st
 def _conditional_font_affects_reader(conditional: list[str], reader_node: Tag,
                                      family: str) -> bool:
     nodes = [reader_node, *(node for node in reader_node.parents if isinstance(node, Tag)),
-             *(p for p in reader_node.find_all("p") if not _is_inert_node(p))]
+             *(node for node in reader_node.descendants
+               if isinstance(node, Tag) and not _is_inert_node(node))]
     for block in conditional:
         for face in FONT_FACE_RE.findall(block):
             declared = FAMILY_RE.search(face)
