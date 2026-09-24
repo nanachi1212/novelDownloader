@@ -804,6 +804,24 @@ def test_stylesheet_relation_tokens_are_case_insensitive(tmp_path):
     assert preview.paragraph_count == 2
 
 
+def test_unresolved_reader_display_fails_closed(tmp_path):
+    page = _saved_reader(tmp_path)
+    page.write_text(page.read_text(encoding="utf-8").replace(
+        'id="reader-content"', 'id="reader-content" style="--state:none;display:var(--state)"'),
+        encoding="utf-8")
+    with pytest.raises(ReaderImportError, match="CSS display"):
+        import_reader_html(page, "999", "101", "第一章", tmp_path / "preview")
+
+
+def test_inline_display_comment_is_evaluated(tmp_path):
+    page = _saved_reader(tmp_path)
+    page.write_text(page.read_text(encoding="utf-8").replace(
+        "<p>第二段", '<p>第二段<span style="display:/*x*/none">隱藏字</span>'),
+        encoding="utf-8")
+    preview = import_reader_html(page, "999", "101", "第一章", tmp_path / "preview")
+    assert "隱藏字" not in preview.preview_path.read_text(encoding="utf-8")
+
+
 def test_last_duplicate_font_face_wins(tmp_path):
     page = _saved_reader(tmp_path)
     assets = tmp_path / "chapter_files"

@@ -80,6 +80,9 @@ def test_fixed_tables_decode_only_known_private_use_positions():
     ambiguous = "\ue3eb" * 20
     assert decode_chapter(ambiguous, preferred_mode=0).text == decode_pua(ambiguous, 0)
     assert decode_chapter(ambiguous, preferred_mode=1).text == decode_pua(ambiguous, 1)
+    rotated = "\ue3f7" * 30
+    assert decode_chapter(rotated, preferred_mode=0).mode == 1
+    assert decode_chapter(rotated, preferred_mode=0).text == "正" * 30
 
 
 def test_reader_paragraph_breaks_survive_html_flattening():

@@ -64,7 +64,7 @@ def decode_chapter(text: str, preferred_mode: int | None = None) -> DecodeResult
     pua = [char for char in text if _is_pua(char)]
     if not pua:
         return DecodeResult(text, None, 0)
-    if preferred_mode in (0, 1):
+    if len(pua) < 20 and preferred_mode in (0, 1):
         decoded = decode_pua(text, preferred_mode)
         if any(_is_pua(char) for char in decoded):
             raise DecodeFailed("DECODE_FAILED: preferred mapping does not cover all PUA characters")
@@ -84,6 +84,8 @@ def decode_chapter(text: str, preferred_mode: int | None = None) -> DecodeResult
         mode = candidates[0][0]
     elif len(candidates) == 2 and abs(candidates[0][1] - candidates[1][1]) >= 0.08:
         mode = max(candidates, key=lambda entry: entry[1])[0]
+    elif preferred_mode in {candidate[0] for candidate in candidates}:
+        mode = preferred_mode
     else:
         raise DecodeFailed("DECODE_FAILED: the PUA mapping mode is ambiguous or incomplete")
     return DecodeResult(decode_pua(text, mode), mode, len(pua))

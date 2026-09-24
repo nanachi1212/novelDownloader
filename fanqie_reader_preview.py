@@ -532,7 +532,7 @@ def _css_visibility_value(node: Tag, rules, name: str) -> str:
                            if _selector_matches(selector, node)), default=None)
         if specificity is not None:
             candidates.append(((int(important), specificity, order), value))
-    for order, match in enumerate(VISIBILITY_RE.finditer(node.get("style", ""))):
+    for order, match in enumerate(VISIBILITY_RE.finditer(CSS_COMMENT_RE.sub("", node.get("style", "")))):
         if match.group(1).lower() != name:
             continue
         raw = match.group(2).strip()
@@ -540,6 +540,13 @@ def _css_visibility_value(node: Tag, rules, name: str) -> str:
         value = re.sub(r"\s*!important\s*$", "", raw, flags=re.I).strip().lower()
         candidates.append(((int(important), (1, 0, 0, 0), len(rules) + order), value))
     result = max(candidates, key=lambda candidate: candidate[0])[1] if candidates else ""
+    if name == "display" and result and result not in {
+            "none", "block", "inline", "inline-block", "flex", "inline-flex", "grid", "inline-grid",
+            "contents", "flow-root", "list-item", "table", "inline-table", "table-row", "table-cell",
+            "table-row-group", "table-header-group", "table-footer-group", "table-caption",
+            "table-column", "table-column-group", "ruby", "ruby-base", "ruby-text",
+            "inherit", "initial", "unset"}:
+        raise ReaderImportError("無法確認保存頁面的 CSS display 值，未建立預覽。")
     if isinstance(rules, _VisibilityRules):
         rules.cache[key] = result
     return result
