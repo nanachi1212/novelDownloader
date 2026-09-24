@@ -314,13 +314,28 @@ def fetch_parsed_chapter(fetcher, adapter, chapter, retries: int, on_retry=None)
 
 def _fetch_checked(fetcher, adapter, url, **kwargs):
     """Inspect a site's gate headers/status even when Fetcher raises first."""
-    try:
-        response = fetcher.get(url, **kwargs)
-    except FetchError:
+    attempts = max(1, int(kwargs.pop("retries", 1)))
+    if not getattr(adapter, "inspect_each_request_attempt", False):
+        try:
+            response = fetcher.get(url, retries=attempts, **kwargs)
+        except FetchError as exc:
+            adapter.validate_response(fetcher)
+            adapter.validate_fetch_error(exc)
+            raise
         adapter.validate_response(fetcher)
-        raise
-    adapter.validate_response(fetcher)
-    return response
+        return response
+    for attempt in range(attempts):
+        try:
+            response = fetcher.get(url, retries=1, **kwargs)
+        except FetchError as exc:
+            adapter.validate_response(fetcher)
+            adapter.validate_fetch_error(exc)
+            if attempt + 1 == attempts:
+                raise
+            time.sleep(min(1.5 * (attempt + 1), CHAPTER_RETRY_MAX_WAIT))
+            continue
+        adapter.validate_response(fetcher)
+        return response
 
 
 def write_epub(path: Path, title: str, author: str, source: str, chapters, transform=None):

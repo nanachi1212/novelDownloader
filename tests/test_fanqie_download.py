@@ -314,6 +314,47 @@ def test_transient_short_reader_body_retries_before_caching(tmp_path, monkeypatc
     assert "短" not in (tmp_path / "cache" / BOOK_ID / f"{ITEM_ID}.txt").read_text(encoding="utf-8")
 
 
+def test_catalog_retries_transient_error_but_stops_on_access_gate(tmp_path, monkeypatch):
+    directory_calls = []
+    gate = [False]
+
+    class FakeFetcher:
+        def __init__(self, **_kwargs):
+            self.last_response_headers = {}
+            self.last_status_code = 200
+
+        def get(self, url, **_kwargs):
+            self.last_status_code = 200
+            if "/page/" in url:
+                return _meta()
+            if "/directory/detail" in url:
+                directory_calls.append(url)
+                if gate[0]:
+                    self.last_status_code = 403
+                    raise FetchError("HTTP 403")
+                if len(directory_calls) == 1:
+                    self.last_status_code = 502
+                    raise FetchError("HTTP 502")
+                return _directory(_item())
+            return _reader()
+
+        def polite_sleep(self):
+            pass
+
+    monkeypatch.setattr(downloader_task, "Fetcher", FakeFetcher)
+    monkeypatch.setattr(downloader_task, "cache_root", lambda: tmp_path / "cache")
+    monkeypatch.setattr(downloader_task, "load_rules", lambda _site: [])
+    monkeypatch.setattr(downloader_task.time, "sleep", lambda _seconds: None)
+    output = downloader_task.download_novel(BOOK_URL, tmp_path / "out", delay=0,
+                                            retries=3, end=1)
+    assert output.is_file() and len(directory_calls) == 2
+    gate[0] = True
+    with pytest.raises(AccessVerificationRequired):
+        downloader_task.download_novel(BOOK_URL, tmp_path / "out", delay=0,
+                                       retries=3, end=1)
+    assert len(directory_calls) == 3
+
+
 def test_merged_chapter_cache_key_tracks_all_item_ids():
     from sites.base import Chapter
     adapter = FanqieAdapter()

@@ -70,6 +70,9 @@ class SiteAdapter:
     def validate_response(self, fetcher) -> None:
         """Reject a response that signals a site access gate, including HTTP 200."""
 
+    def validate_fetch_error(self, error: Exception) -> None:
+        """Reject a site-specific access gate reported by the fetch layer."""
+
     def chapter_cache_filename(self, chapter: Chapter, index: int) -> str:
         """Name a chapter cache entry; sites with stable IDs may override it."""
         return f"{index:04d}.txt"

@@ -232,7 +232,7 @@ def create_fetcher(delay=2.0, timeout=20):
 class FanqieAdapter(SiteAdapter):
     domains = ["fanqienovel.com", "www.fanqienovel.com"]
     max_chapter_workers = 1
-    max_request_retries = 1
+    inspect_each_request_attempt = True
     require_complete_chapters = True
 
     def default_request_headers(self):
@@ -259,6 +259,10 @@ class FanqieAdapter(SiteAdapter):
     def validate_response(self, fetcher):
         if _verification_required(fetcher):
             raise AccessVerificationRequired("番茄網站要求登入或人機驗證，已停止公開章節下載。")
+
+    def validate_fetch_error(self, error):
+        if "Cloudflare 挑戰" in str(error) or "人機驗證" in str(error):
+            raise AccessVerificationRequired("番茄網站要求人機驗證，已停止公開章節下載。") from error
 
     def parse_meta(self, html):
         state = _initial_state(html)
