@@ -75,6 +75,31 @@ def test_preview_status_rejects_missing_or_changed_font(tmp_path):
     assert reading_preview_status(root, "999", "101") == (False, "字型檔缺失或不唯一")
 
 
+def test_preview_status_detects_corrupt_html_and_allows_preserving_repair(tmp_path):
+    page = _saved_reader(tmp_path)
+    root = tmp_path / "preview"
+    initial = import_reader_html(page, "999", "101", "第一章", root)
+    initial.preview_path.write_text("<html>broken</html>", encoding="utf-8")
+    assert reading_preview_status(root, "999", "101") == (False, "預覽頁內容與索引不符")
+    repaired = import_reader_html(page, "999", "101", "第一章", root)
+    assert repaired.previous_path is not None
+    assert (repaired.previous_path / "preview.html").read_text(encoding="utf-8") == "<html>broken</html>"
+    assert reading_preview_status(root, "999", "101")[0]
+
+
+def test_legacy_preview_without_digest_requires_expected_structure(tmp_path):
+    page = _saved_reader(tmp_path)
+    root = tmp_path / "preview"
+    preview = import_reader_html(page, "999", "101", "第一章", root)
+    manifest_path = preview.preview_path.parent / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    del manifest["preview_sha256"]
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    assert reading_preview_status(root, "999", "101")[0]
+    preview.preview_path.write_text("<html>broken</html>", encoding="utf-8")
+    assert reading_preview_status(root, "999", "101") == (False, "舊版預覽頁內容無法驗證")
+
+
 def test_reimport_repairs_invalid_preview_and_preserves_previous_files(tmp_path):
     page = _saved_reader(tmp_path)
     root = tmp_path / "preview"
@@ -278,6 +303,46 @@ def test_import_selects_normal_face_when_bold_face_appears_first(tmp_path):
     )
     preview = import_reader_html(page, "999", "101", "第一章", tmp_path / "preview")
     assert preview.font_sha256 == hashlib.sha256(normal).hexdigest()
+
+
+def test_import_selects_face_matching_reader_weight_and_style(tmp_path):
+    page = _saved_reader(tmp_path)
+    assets = tmp_path / "chapter_files"
+    normal = b"wOF2normal-font"
+    medium_italic = b"wOF2medium-italic-font"
+    (assets / "normal.woff2").write_bytes(normal)
+    (assets / "medium.woff2").write_bytes(medium_italic)
+    (assets / "reader.css").write_text(
+        "@font-face {font-family:MappedFont;font-weight:400;src:url('normal.woff2');}"
+        "@font-face {font-family:MappedFont;font-weight:500;font-style:italic;src:url('medium.woff2');}"
+        "#reader-content {font-family:MappedFont;font-weight:500;font-style:italic;}",
+        encoding="utf-8",
+    )
+    preview = import_reader_html(page, "999", "101", "第一章", tmp_path / "preview")
+    assert preview.font_sha256 == hashlib.sha256(medium_italic).hexdigest()
+    document = preview.preview_path.read_text(encoding="utf-8")
+    assert "font:italic 500 18px/2" in document
+    assert '"italic 500 18px "' in document
+    manifest = json.loads((preview.preview_path.parent / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["font_weight"] == 500 and manifest["font_style"] == "italic"
+    assert manifest["preview_sha256"] == hashlib.sha256(preview.preview_path.read_bytes()).hexdigest()
+
+
+def test_import_rejects_missing_matching_weight_face(tmp_path):
+    page = _saved_reader(tmp_path)
+    css = tmp_path / "chapter_files" / "reader.css"
+    css.write_text("@font-face {font-family:MappedFont;font-weight:400;src:url('font.woff2');}"
+                   "#reader-content {font-family:MappedFont;font-weight:500;}", encoding="utf-8")
+    with pytest.raises(ReaderImportError, match="字重／樣式相符"):
+        import_reader_html(page, "999", "101", "第一章", tmp_path / "preview")
+
+
+def test_import_rejects_mixed_paragraph_weights(tmp_path):
+    page = _saved_reader(tmp_path)
+    source = page.read_text(encoding="utf-8").replace("<p>第二段", '<p style="font-weight:700">第二段')
+    page.write_text(source, encoding="utf-8")
+    with pytest.raises(ReaderImportError, match="不同字重"):
+        import_reader_html(page, "999", "101", "第一章", tmp_path / "preview")
 
 
 def test_import_rejects_font_family_that_could_break_generated_style(tmp_path):

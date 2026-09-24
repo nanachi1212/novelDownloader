@@ -21,6 +21,7 @@ from app_paths import write_json
 MAX_HTML_BYTES = 12 * 1024 * 1024
 MAX_CSS_BYTES = 3 * 1024 * 1024
 MAX_FONT_BYTES = 32 * 1024 * 1024
+MAX_PREVIEW_BYTES = 48 * 1024 * 1024
 SAVED_FONT_HOSTS = {"lf6-awef.bytetos.com", "lf3-awef.bytetos.com"}
 GATE_UI_IDS = {"bdturing-verify", "captcha-container", "login-dialog", "paywall"}
 GATE_ONLY_TEXT = {"人机验证", "人機驗證", "请先登录", "請先登入", "购买本章", "購買本章"}
@@ -63,8 +64,18 @@ def reading_preview_status(preview_root, book_id: str, item_id: str) -> tuple[bo
                 or not isinstance(digest, str)
                 or not re.fullmatch(r"[a-f0-9]{64}", digest)):
             return False, "預覽索引與所選章節不符"
-        if not (folder / "preview.html").is_file():
+        preview_path = folder / "preview.html"
+        if not preview_path.is_file():
             return False, "預覽頁缺失"
+        preview_bytes = _read_bounded(preview_path, MAX_PREVIEW_BYTES, "預覽頁")
+        preview_digest = manifest.get("preview_sha256")
+        if preview_digest is not None:
+            if (not isinstance(preview_digest, str)
+                    or not re.fullmatch(r"[a-f0-9]{64}", preview_digest)
+                    or hashlib.sha256(preview_bytes).hexdigest() != preview_digest):
+                return False, "預覽頁內容與索引不符"
+        elif not _legacy_preview_structure(preview_bytes, digest):
+            return False, "舊版預覽頁內容無法驗證"
         fonts = [folder / "fonts" / f"{digest}{suffix}"
                  for suffix in (".woff2", ".woff", ".ttf", ".otf")]
         available = [path for path in fonts if path.is_file() and not path.is_symlink()]
@@ -78,6 +89,18 @@ def reading_preview_status(preview_root, book_id: str, item_id: str) -> tuple[bo
         return True, "字型檔已核對，開啟後仍須確認瀏覽器載入狀態"
     except (ReaderImportError, OSError, ValueError, TypeError, AttributeError):
         return False, "預覽資料無法驗證"
+
+
+def _legacy_preview_structure(preview_bytes: bytes, font_digest: str) -> bool:
+    """Keep older generated previews usable, while rejecting obvious damage."""
+    try:
+        content = preview_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    return (content.lstrip().lower().startswith("<!doctype html>")
+            and "<main>" in content and "</main>" in content
+            and 'id="font-status"' in content
+            and f"fonts/{font_digest}." in content)
 
 
 def _safe_source_file(value: Path, root: Path) -> Path:
@@ -290,18 +313,83 @@ def _effective_font(node, css_blocks: list[str]) -> str:
     return ""
 
 
-def _font_resource(css_blocks: list[str], family: str, html_path: Path) -> tuple[bytes, str]:
+def _font_attribute_rules(css_blocks: list[str], name: str) -> list[tuple[list[str], str]]:
+    pattern = re.compile(rf"{re.escape(name)}\s*:\s*([^;}}]+)", re.I)
+    rules = []
+    for block in css_blocks:
+        for selector_text, declarations in CSS_RULE_RE.findall(block):
+            if selector_text.lstrip().startswith("@"):
+                continue
+            match = pattern.search(declarations)
+            if match:
+                value = re.sub(r"\s*!important\s*$", "", match.group(1), flags=re.I).strip().lower()
+                rules.append((selector_text.split(","), value))
+    return rules
+
+
+def _declared_font_attribute(node, rules: list[tuple[list[str], str]], name: str) -> str:
+    pattern = re.compile(rf"{re.escape(name)}\s*:\s*([^;}}]+)", re.I)
+    inline_match = pattern.search(node.get("style", ""))
+    if inline_match:
+        return re.sub(r"\s*!important\s*$", "", inline_match.group(1), flags=re.I).strip().lower()
+    selected = ""
+    for selectors, value in rules:
+        if any(_selector_matches(selector, node) for selector in selectors):
+            selected = value
+    return selected
+
+
+def _effective_font_attribute(node, rules: list[tuple[list[str], str]], name: str,
+                              default: str) -> str:
+    current = node
+    while isinstance(current, Tag):
+        value = _declared_font_attribute(current, rules, name)
+        if value and value not in {"inherit", "unset"}:
+            return default if value in {"initial", "revert", "revert-layer"} else value
+        current = current.parent
+    return default
+
+
+def _font_weight(value: str) -> int:
+    if value == "normal":
+        return 400
+    if value == "bold":
+        return 700
+    if re.fullmatch(r"[1-9]00", value):
+        return int(value)
+    raise ReaderImportError("無法確認正文實際字重，未建立字型閱讀預覽。")
+
+
+def _font_style(value: str) -> str:
+    if value in {"normal", "italic", "oblique"}:
+        return value
+    raise ReaderImportError("無法確認正文實際字型樣式，未建立字型閱讀預覽。")
+
+
+def _face_matches(face: str, weight: int, style: str) -> bool:
+    declared_weight = re.search(r"font-weight\s*:\s*([^;}]+)", face, re.I)
+    weight_value = declared_weight.group(1).strip().lower() if declared_weight else "normal"
+    parts = weight_value.split()
+    if len(parts) == 2 and all(re.fullmatch(r"[1-9]00", part) for part in parts):
+        weight_matches = int(parts[0]) <= weight <= int(parts[1])
+    else:
+        weight_matches = _font_weight(weight_value) == weight
+    declared_style = re.search(r"font-style\s*:\s*([^;}]+)", face, re.I)
+    style_value = declared_style.group(1).strip().lower() if declared_style else "normal"
+    return weight_matches and _font_style(style_value) == style
+
+
+def _font_resource(css_blocks: list[str], family: str, weight: int, style: str,
+                   html_path: Path) -> tuple[bytes, str]:
     root = html_path.parent
     remote_font_missing = False
     faces = [face for block in css_blocks for face in FONT_FACE_RE.findall(block)
              if (declared := FAMILY_RE.search(face)) and _first_family(declared) == family]
 
-    def weight_priority(face):
-        match = re.search(r"font-weight\s*:\s*([^;}]+)", face, re.I)
-        weight = match.group(1).strip().lower() if match else "normal"
-        return 0 if weight in {"normal", "400"} else 1
-
-    for face in sorted(faces, key=weight_priority):
+    matching_faces = [face for face in faces if _face_matches(face, weight, style)]
+    if faces and not matching_faces:
+        raise ReaderImportError("找不到與正文實際字重／樣式相符的字型檔，未建立預覽。")
+    for face in matching_faces:
         for src in URL_RE.finditer(face):
             uri = src.group(2).strip()
             if uri.lower().startswith("data:"):
@@ -378,26 +466,28 @@ def _paragraph_text(node) -> list[str]:
 
 
 def _preview_document(title: str, paragraphs: list[str], family: str, relative_font: str,
-                      item_id: str, next_item_id: str | None = None) -> str:
+                      item_id: str, next_item_id: str | None = None,
+                      weight: int = 400, style: str = "normal") -> str:
     safe_family = json.dumps(family, ensure_ascii=True)
     safe_font = html.escape(relative_font, quote=True)
     body = "\n".join(f"<p>{html.escape(text, quote=True).replace(chr(10), '<br>')}</p>" for text in paragraphs)
     original = f"https://fanqienovel.com/reader/{item_id}"
+    font_spec = json.dumps(f"{style} {weight} 18px ")
     next_link = (f'<a href="https://fanqienovel.com/reader/{next_item_id}" '
                  'rel="noopener noreferrer">下一章（原站）</a>' if next_item_id else "")
     return f"""<!doctype html>
 <html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; font-src 'self'; script-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
 <title>{html.escape(title)}</title><style>
-@font-face{{font-family:{safe_family};src:url('{safe_font}') format('{Path(relative_font).suffix[1:]}');font-display:block}}
+@font-face{{font-family:{safe_family};font-weight:{weight};font-style:{style};src:url('{safe_font}') format('{Path(relative_font).suffix[1:]}');font-display:block}}
 body{{max-width:44rem;margin:3rem auto;padding:0 1.2rem;background:#f6f1e8;color:#29241e;font:16px/1.6 system-ui,sans-serif}}
-main{{font:18px/2 {safe_family},serif}}
+main{{font:{style} {weight} 18px/2 {safe_family},serif}}
 p{{margin:0 0 1.2em;white-space:pre-wrap}} #font-status{{font:14px/1.5 sans-serif;color:#745}}
 </style></head><body><h1>{html.escape(title)}</h1>
 <p id="font-status" role="status">正在確認章節字型載入…</p><main>{body}</main>
-<script>document.fonts.load('18px ' + {safe_family}).then(function(f){{
+<script>document.fonts.load({font_spec} + {safe_family}).then(function(f){{
  const e=document.getElementById('font-status');
- if(f.length && document.fonts.check('18px ' + {safe_family})){{e.textContent='字型已載入：' + {safe_family};e.style.color='#27632a';}}
+ if(f.length && document.fonts.check({font_spec} + {safe_family})){{e.textContent='字型已載入：' + {safe_family};e.style.color='#27632a';}}
  else{{e.textContent='字型載入失敗，視覺內容不可靠，請回原站閱讀。';}}
 }}).catch(function(){{document.getElementById('font-status').textContent='字型載入失敗，請檢查保存的資源並回原站閱讀。';}});</script>
 <footer>文字尚未還原。這是字型視覺預覽；複製、搜尋、朗讀及一般文字匯出可能不正確。</footer>
@@ -422,7 +512,8 @@ def _make_import_stage(parent: Path, item_id: str) -> Path:
 
 
 def _reader_sidecars(paragraphs: list[str], source_bytes: bytes, book_id: str,
-                     item_id: str, family: str, font_digest: str) -> tuple[dict, dict]:
+                     item_id: str, family: str, font_digest: str,
+                     weight: int, style: str) -> tuple[dict, dict]:
     raw_text = {"paragraphs": paragraphs}
     canonical = json.dumps(raw_text, ensure_ascii=False, sort_keys=True,
                            separators=(",", ":")).encode("utf-8")
@@ -434,6 +525,8 @@ def _reader_sidecars(paragraphs: list[str], source_bytes: bytes, book_id: str,
         "source_html_sha256": hashlib.sha256(source_bytes).hexdigest(),
         "raw_text_sha256": hashlib.sha256(canonical).hexdigest(),
         "font_family": family,
+        "font_weight": weight,
+        "font_style": style,
         "font_sha256": font_digest,
         "used_codepoints": sorted({ord(char) for paragraph in paragraphs for char in paragraph}),
         "used_pua_codepoints": sorted({ord(char) for paragraph in paragraphs for char in paragraph
@@ -479,7 +572,17 @@ def import_reader_html(source_path, book_id: str, item_id: str, title: str, prev
         raise ReaderImportError("無法確認正文實際使用的字型，無法宣稱字型閱讀預覽可用。")
     if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{0,63}", family):
         raise ReaderImportError("正文字型名稱含不安全字元，無法建立預覽。")
-    font_bytes, suffix = _font_resource(css, family, source_path)
+    weight_rules = _font_attribute_rules(css, "font-weight")
+    style_rules = _font_attribute_rules(css, "font-style")
+    paragraph_weights = {_font_weight(_effective_font_attribute(p, weight_rules, "font-weight", "normal"))
+                         for p in content_node.find_all("p")}
+    paragraph_styles = {_font_style(_effective_font_attribute(p, style_rules, "font-style", "normal"))
+                        for p in content_node.find_all("p")}
+    if len(paragraph_weights) != 1 or len(paragraph_styles) != 1:
+        raise ReaderImportError("章節段落使用不同字重／樣式，無法安全套用單一字型預覽。")
+    weight = next(iter(paragraph_weights))
+    style = next(iter(paragraph_styles))
+    font_bytes, suffix = _font_resource(css, family, weight, style, source_path)
     digest = hashlib.sha256(font_bytes).hexdigest()
     root = Path(preview_root) / str(book_id) / str(item_id)
     if root.is_symlink():
@@ -502,13 +605,17 @@ def import_reader_html(source_path, book_id: str, item_id: str, title: str, prev
         # Keep a byte-for-byte copy for later diagnosis; never execute/open it.
         shutil.copyfile(source_path, stage / "source.html")
         raw_text, source_metadata = _reader_sidecars(
-            paragraphs, raw, str(book_id), str(item_id), family, digest
+            paragraphs, raw, str(book_id), str(item_id), family, digest, weight, style
         )
         write_json(stage / "raw_text.json", raw_text)
         write_json(stage / "source_metadata.json", source_metadata)
         preview_path = stage / "preview.html"
         document = _preview_document(title, paragraphs, family, f"fonts/{font_name}",
-                                     str(item_id), str(next_item_id) if next_item_id else None)
+                                     str(item_id), str(next_item_id) if next_item_id else None,
+                                     weight, style)
+        preview_bytes = document.encode("utf-8")
+        if len(preview_bytes) > MAX_PREVIEW_BYTES:
+            raise ReaderImportError("產生的預覽頁超過允許大小，原始資料未更動。")
         temp_preview = stage / "preview.html.tmp"
         with temp_preview.open("x", encoding="utf-8", newline="\n") as stream:
             stream.write(document)
@@ -518,6 +625,8 @@ def import_reader_html(source_path, book_id: str, item_id: str, title: str, prev
         write_json(stage / "manifest.json", {
             "book_id": str(book_id), "item_id": str(item_id), "title": title,
             "font_family": family, "font_sha256": digest,
+            "font_weight": weight, "font_style": style,
+            "preview_sha256": hashlib.sha256(preview_bytes).hexdigest(),
             "paragraph_count": len(paragraphs), "text_restored": False,
         })
         # Keep a broken earlier import intact under a unique sibling name.
