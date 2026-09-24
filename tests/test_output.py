@@ -902,3 +902,41 @@ def test_catalog_starting_on_a_later_page_still_outputs_chapters_in_page_order(m
     text = output.read_text(encoding="utf-8")
 
     assert text.index("第1章") < text.index("第2章") < text.index("第3章")
+
+
+def test_merge_split_chapters_honors_declared_total_and_refuses_incomplete_groups():
+    """標題寫明「(1/5)、(2/5)」卻只有前兩段時,不能合併成看似完整的章節
+    (Codex review 抓到的 bug:總段數被丟掉,只檢查編號連續)。
+    """
+    partial = [Chapter("第一章(1/5)", "https://example/1"), Chapter("第一章(2/5)", "https://example/2")]
+    merged, happened = merge_split_chapters(partial)
+    assert happened is False
+    assert [c.title for c in merged] == ["第一章(1/5)", "第一章(2/5)"]
+
+
+def test_merge_split_chapters_merges_when_all_declared_parts_are_present():
+    # 全形數字、斜線與括號會先經 NFKC 正規化。
+    full = [Chapter(f"第一章（{i}／３）", f"https://example/{i}") for i in (1, 2, 3)]
+    merged, happened = merge_split_chapters(full)
+    assert happened is True
+    assert [c.title for c in merged] == ["第一章"]
+    assert merged[0].extra_urls == ["https://example/2", "https://example/3"]
+
+
+def test_merge_split_chapters_refuses_missing_declared_middle_part():
+    missing_middle = [Chapter("第一章(1/3)", "https://example/1"), Chapter("第一章(3/3)", "https://example/3")]
+    merged, happened = merge_split_chapters(missing_middle)
+    assert happened is False
+    assert [c.title for c in merged] == ["第一章(1/3)", "第一章(3/3)"]
+
+
+def test_merge_split_chapters_refuses_inconsistent_declared_totals():
+    mixed = [
+        Chapter("第一章(1/3)", "https://example/1"),
+        Chapter("第一章(2/4)", "https://example/2"),
+        Chapter("第一章(3/4)", "https://example/3"),
+        Chapter("第一章(4/4)", "https://example/4"),
+    ]
+    merged, happened = merge_split_chapters(mixed)
+    assert happened is False
+    assert [c.title for c in merged] == [chapter.title for chapter in mixed]

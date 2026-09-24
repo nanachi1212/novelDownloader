@@ -29,7 +29,7 @@ MAX_CATALOG_PAGES = 200         # 目錄分頁上限,避免分頁連結壞掉時
 
 # 目錄把同一章拆成多個項目時的編號後綴,例如「第一章(2)」「第一章（3/5）」「第一章【2】」
 SPLIT_SUFFIX_RE = re.compile(
-    r"^(?P<base>.*?)\(\s*(?P<part>\d+)(?:\s*/\s*\d+)?\s*\)$"
+    r"^(?P<base>.*?)\(\s*(?P<part>\d+)(?:\s*/\s*(?P<total>\d+))?\s*\)$"
     r"|^(?P<base2>.*?)[【\[]\s*(?P<part2>\d+)\s*[】\]]$"
 )
 
@@ -86,14 +86,15 @@ def unique_chapters(chapters):
 
 
 def _split_chapter_suffix(title: str):
-    """回傳 (去掉編號後綴的標題, 編號);沒有後綴回傳 (原標題, None)。"""
+    """回傳 (去掉編號後綴的標題, 編號, 宣告的總段數);沒有後綴回傳 (原標題, None, None)。"""
     normalized = unicodedata.normalize("NFKC", title.strip())
     m = SPLIT_SUFFIX_RE.match(normalized)
     if not m:
-        return normalized, None
+        return normalized, None, None
     base = m.group("base") if m.group("base") is not None else m.group("base2")
     part = m.group("part") if m.group("part") is not None else m.group("part2")
-    return base.strip(), int(part)
+    total = m.group("total")
+    return base.strip(), int(part), int(total) if total else None
 
 
 def order_catalog_pages(pages):
@@ -124,7 +125,7 @@ def merge_split_chapters(chapters):
     merged, happened = [], False
     i, n = 0, len(chapters)
     while i < n:
-        base, part = _split_chapter_suffix(chapters[i].title)
+        base, part, total = _split_chapter_suffix(chapters[i].title)
         if part not in (None, 1):
             # 第 1 段不在(目錄漏抓或解析失敗),不能從第 2/3 段開始假裝合併出
             # 一個「完整」章節,那樣會把缺頭的內容悄悄藏起來。
@@ -132,15 +133,22 @@ def merge_split_chapters(chapters):
             i += 1
             continue
         group = [chapters[i]]
+        totals = {total} if total is not None else set()
         expected = (part or 1) + 1
         j = i + 1
         while j < n:
-            nbase, npart = _split_chapter_suffix(chapters[j].title)
+            nbase, npart, ntotal = _split_chapter_suffix(chapters[j].title)
             if nbase != base or npart != expected:
                 break
             group.append(chapters[j])
+            if ntotal is not None:
+                totals.add(ntotal)
             expected += 1
             j += 1
+        if len(group) > 1 and totals and (len(totals) != 1 or len(group) != next(iter(totals))):
+            # 標題寫明「共 N 段」但目錄只有其中幾段(其餘漏抓/解析失敗),或各段宣告的
+            # 總數不一致:不能合併成一個看似完整的章節,否則會悄悄藏起被截斷的章節。
+            group = group[:1]
         if len(group) > 1:
             happened = True
             head = group[0]
