@@ -660,6 +660,58 @@ def test_catalog_pagination_stops_on_a_to_b_to_a_loop_with_no_new_chapters(monke
     assert fetch_log.count("page-b") == 1
 
 
+def test_catalog_pagination_continues_past_a_duplicate_alias_page(monkeypatch, tmp_path):
+    """佇列裡先出現一個沒有新章節的重複/別名頁,不能因此整批放棄後面排隊、
+    真正有新章節的分頁(Codex review 抓到的 bug:原本遇到 0 新章節就整個 break)。
+    """
+    import downloader_task
+
+    class FakeFetcher:
+        def __init__(self, **_kwargs):
+            self.throttle = None
+
+        def get(self, url, **_kwargs):
+            return url
+
+        def polite_sleep(self):
+            pass
+
+    class DupeAliasAdapter(SiteAdapter):
+        encoding = "utf-8"
+        domains = ["dupe.test"]
+        is_generic = False
+
+        def catalog_url(self, _url): return "catalog"
+        def meta_url(self, _url): return None
+
+        def parse_catalog(self, _html):
+            return BookInfo("重複頁測試", "", [Chapter("第1章", "chapter-1")])
+
+        def catalog_page_urls(self, _html, url):
+            # 第一頁同時連到一個內容重複的別名頁,和真正有新章節的第二頁
+            return ["dup-alias", "page2"] if url == "catalog" else []
+
+        def parse_catalog_page(self, _html, url):
+            if url == "dup-alias":
+                return BookInfo("", "", [Chapter("第1章", "chapter-1")])  # 沒有新章節
+            return BookInfo("", "", [Chapter("第2章", "chapter-2")])
+
+        def book_id(self, _url): return "dupe-test"
+        def chapter_source_url(self, _html, _url): return None
+        def next_page_url(self, _html, _url): return None
+        def parse_chapter(self, html, title=""): return f"正文 {html}"
+
+    monkeypatch.setattr(downloader_task, "Fetcher", FakeFetcher)
+    monkeypatch.setattr(downloader_task, "get_adapter", lambda _url: DupeAliasAdapter())
+    monkeypatch.setattr(downloader_task, "cache_root", lambda: tmp_path / "cache")
+    monkeypatch.setattr(downloader_task, "load_rules", lambda _site: [])
+
+    output = downloader_task.download_novel("https://dupe.test/book", tmp_path, delay=0, chapter_workers=1)
+    text = output.read_text(encoding="utf-8")
+
+    assert "第1章" in text and "第2章" in text  # page2 沒有被 dup-alias 連累而漏抓
+
+
 def _merge_test_setup(monkeypatch, tmp_path, titles):
     import downloader_task
 

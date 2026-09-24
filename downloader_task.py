@@ -330,10 +330,12 @@ def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
     if template_name:
         callback("catalog", 0, 1, f"[自動偵測] 目錄套用內建模板: {template_name}")
 
-    # 目錄分頁:反覆問 adapter「還有哪些分頁」,直到沒有新分頁或某頁沒帶來任何
-    # 新章節(分頁連結壞掉/重複頁時的安全煞車,避免 A→B→A 這種循環無窮抓取)。
-    # 用「新增的章節網址」而非單純的章節數變化來判斷有沒有進展:壞掉的分頁
-    # 連結常常是「重複回傳同一頁內容」,章節數雖然增加,但都是舊網址。
+    # 目錄分頁:反覆問 adapter「還有哪些分頁」,直到沒有新分頁為止。
+    # 迴圈安全由 visited_pages(每個網址只抓一次)+ MAX_CATALOG_PAGES(硬上限)
+    # 保證,不會因為 A→B→A 這種循環而無窮抓取。用「新增的章節網址」而非單純的
+    # 章節數變化來判斷有沒有進展:某一頁剛好是重複頁/別名(0 個新章節)只代表
+    # 那一頁沒帶來新東西,不代表後面排隊的其他頁也一樣,所以不整批中止,
+    # 只是這頁不計入章節、繼續處理佇列裡剩下的頁面。
     visited_pages = {catalog_url}
     seen_chapter_urls = {c.url for c in book.chapters}
     queue = list(adapter.catalog_page_urls(catalog_html, catalog_url))
@@ -349,10 +351,9 @@ def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
         next_html = fetcher.get(next_url, retries=retries)
         extra = adapter.parse_catalog_page(next_html, next_url)
         new_chapters = [c for c in extra.chapters if c.url not in seen_chapter_urls]
-        if not new_chapters:
-            break
-        seen_chapter_urls.update(c.url for c in new_chapters)
-        book.chapters.extend(new_chapters)
+        if new_chapters:
+            seen_chapter_urls.update(c.url for c in new_chapters)
+            book.chapters.extend(new_chapters)
         for more in adapter.catalog_page_urls(next_html, next_url):
             if more not in visited_pages and more not in queue:
                 queue.append(more)

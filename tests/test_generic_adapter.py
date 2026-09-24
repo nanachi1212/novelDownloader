@@ -186,6 +186,28 @@ def test_catalog_page_urls_next_page_link():
     ]
 
 
+def test_catalog_page_urls_finds_next_link_outside_the_matched_template_container():
+    """分頁控制項通常在章節清單容器外面(清單下方的頁碼列),不能只在
+    命中模板的 _catalog_container 裡面找「下一頁」,不然常常找不到。
+    """
+    adapter = GenericAdapter()
+    html = """
+    <div id="chapterlist">
+      <a href="/n/1/1.html">第一章</a>
+      <a href="/n/1/2.html">第二章</a>
+      <a href="/n/1/3.html">第三章</a>
+      <a href="/n/1/4.html">第四章</a>
+      <a href="/n/1/5.html">第五章</a>
+    </div>
+    <div class="pager"><a href="/n/1/index_2.html">下一頁</a></div>
+    """
+    adapter.catalog_url("https://example.test/n/1")
+    adapter.parse_catalog(html)  # 命中 #chapterlist 模板,_catalog_container 只涵蓋章節清單
+    assert adapter.catalog_page_urls(html, "https://example.test/n/1") == [
+        "https://example.test/n/1/index_2.html"
+    ]
+
+
 def test_catalog_page_urls_select_pagination_excludes_current_page():
     adapter = GenericAdapter()
     html = ('<div class="pagination"><select><option value="/list_1.html">1</option>'

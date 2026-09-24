@@ -137,9 +137,11 @@ class GenericAdapter(SiteAdapter):
         return None
 
     def catalog_page_urls(self, html: str, url: str) -> list:
+        # 這個 hook 只會用在目錄頁(不是章節正文頁),分頁控制項通常在章節清單
+        # 容器「外面」(清單下方的頁碼列),所以「下一頁」文字要整頁搜尋,
+        # 不能只找 self._catalog_container 裡面,否則常常什麼都找不到。
         soup = BeautifulSoup(html, "lxml")
         host = urlparse(url).netloc
-        scope = self._catalog_container or soup
         found, seen = [], {url}
 
         def _accept(href):
@@ -149,7 +151,7 @@ class GenericAdapter(SiteAdapter):
             seen.add(nxt)
             return nxt
 
-        for a in scope.find_all("a", href=True):
+        for a in soup.find_all("a", href=True):
             if NEXT_CATALOG_PAGE_TEXT.match(a.get_text(strip=True) or ""):
                 nxt = _accept(a["href"])
                 if nxt:
