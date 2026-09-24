@@ -199,3 +199,16 @@ def test_retry_after_is_clamped_to_max_backoff_delay(monkeypatch):
 
     assert fetcher.get("https://example.test/ch1") == "正文"
     assert slept == [MAX_BACKOFF_DELAY]
+
+
+def test_soft_block_keyword_inside_a_real_short_chapter_is_not_treated_as_block(monkeypatch):
+    """合法的短章節正文剛好出現「請稍後再試」這種句子,不能被當成限速頁反覆重試
+    (Codex review 抓到的 bug):可見文字很多就代表是真內容,不是只有一句提示的封鎖頁。
+    """
+    monkeypatch.setattr("fetcher.time.sleep", lambda _seconds: None)
+    body = "<html><body><p>" + "他低聲說:「請稍後再試,我們還有很多事情要談。」" + "夜色漸深,街燈一盞盞亮起。" * 30 + "</p></body></html>"
+    fetcher = Fetcher(delay=2.0)
+    fetcher.session = FakeSession([FakeResponse(body)])
+
+    assert fetcher.get("https://example.test/ch1") == body
+    assert len(fetcher.session.calls) == 1

@@ -96,6 +96,22 @@ def _split_chapter_suffix(title: str):
     return base.strip(), int(part)
 
 
+def order_catalog_pages(pages):
+    """依網址裡的頁碼還原目錄分頁順序。
+
+    使用者可能貼的是第 2 頁,分頁控制項卻同時連到第 1、3 頁,單純依抓取順序
+    會得到 2、1、3。只有在所有分頁網址除了數字之外完全同樣式時才重排
+    (index_2.html / ?page=2 這類);否則保持抓取順序,不亂猜。
+    pages: [(url, chapters)];回傳同樣結構、排好序的 list。
+    """
+    def template(url):
+        return re.sub(r"\d+", "#", url)
+
+    if len(pages) < 2 or len({template(url) for url, _ in pages}) != 1:
+        return pages
+    return sorted(pages, key=lambda page: [int(n) for n in re.findall(r"\d+", page[0])])
+
+
 def merge_split_chapters(chapters):
     """目錄把同一章拆成多個項目(第一章(1)、第一章(2)…)時合併成一章。
 
@@ -344,6 +360,7 @@ def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
     # 只是這頁不計入章節、繼續處理佇列裡剩下的頁面。
     visited_pages = {catalog_url}
     seen_chapter_urls = {c.url for c in book.chapters}
+    catalog_pages = [(catalog_url, list(book.chapters))]  # 依抓取順序記下每一頁,最後依頁碼還原順序
     queue = list(adapter.catalog_page_urls(catalog_html, catalog_url))
     pages_fetched = 0
     host = urlparse(catalog_url).netloc
@@ -359,11 +376,12 @@ def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
         new_chapters = [c for c in extra.chapters if c.url not in seen_chapter_urls]
         if new_chapters:
             seen_chapter_urls.update(c.url for c in new_chapters)
-            book.chapters.extend(new_chapters)
+            catalog_pages.append((next_url, new_chapters))
         for more in adapter.catalog_page_urls(next_html, next_url):
             if more not in visited_pages and more not in queue:
                 queue.append(more)
     if pages_fetched:
+        book.chapters = [c for _url, chapters in order_catalog_pages(catalog_pages) for c in chapters]
         callback("catalog", 0, 1,
                  f"[目錄分頁] 共抓取 {pages_fetched} 頁,合計 {len(book.chapters)} 個章節連結")
 

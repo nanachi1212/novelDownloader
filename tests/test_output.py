@@ -838,3 +838,67 @@ def test_catalog_size_change_warns_about_possibly_stale_cache(monkeypatch, tmp_p
         callback=lambda stage, current, total, msg: messages.append(msg))
 
     assert any("[快取提醒]" in m and "5" in m and "3" in m for m in messages)
+
+
+def test_order_catalog_pages_restores_page_number_order():
+    from downloader_task import order_catalog_pages
+
+    pages = [("https://x.test/list_2.html", ["b"]), ("https://x.test/list_1.html", ["a"]),
+             ("https://x.test/list_3.html", ["c"])]
+    assert [chapters for _url, chapters in order_catalog_pages(pages)] == [["a"], ["b"], ["c"]]
+
+
+def test_order_catalog_pages_keeps_fetch_order_when_url_patterns_differ():
+    from downloader_task import order_catalog_pages
+
+    pages = [("https://x.test/list_2.html", ["b"]), ("https://x.test/other/a.html", ["a"])]
+    assert order_catalog_pages(pages) == pages
+
+
+def test_catalog_starting_on_a_later_page_still_outputs_chapters_in_page_order(monkeypatch, tmp_path):
+    """使用者貼第 2 頁,分頁控制項同時連到第 1、3 頁:章節必須是 1、2、3 頁的順序
+    (Codex review 抓到的 bug:原本依抓取順序變成 2、1、3)。
+    """
+    import downloader_task
+
+    class FakeFetcher:
+        def __init__(self, **_kwargs):
+            self.throttle = None
+
+        def get(self, url, **_kwargs):
+            return url
+
+        def polite_sleep(self):
+            pass
+
+    class MiddlePageAdapter(SiteAdapter):
+        encoding = "utf-8"
+        domains = ["order.test"]
+        is_generic = False
+
+        def catalog_url(self, _url): return "https://order.test/list_2.html"
+        def meta_url(self, _url): return None
+
+        def catalog_page_urls(self, _html, url):
+            if url == "https://order.test/list_2.html":
+                return ["https://order.test/list_1.html", "https://order.test/list_3.html"]
+            return []
+
+        def parse_catalog_page(self, _html, url):
+            page = url.rsplit("_", 1)[1].split(".")[0]
+            return BookInfo("順序測試", "", [Chapter(f"第{page}章", f"chapter-{page}")])
+
+        def book_id(self, _url): return "order-test"
+        def chapter_source_url(self, _html, _url): return None
+        def next_page_url(self, _html, _url): return None
+        def parse_chapter(self, html, title=""): return f"正文 {html}"
+
+    monkeypatch.setattr(downloader_task, "Fetcher", FakeFetcher)
+    monkeypatch.setattr(downloader_task, "get_adapter", lambda _url: MiddlePageAdapter())
+    monkeypatch.setattr(downloader_task, "cache_root", lambda: tmp_path / "cache")
+    monkeypatch.setattr(downloader_task, "load_rules", lambda _site: [])
+
+    output = downloader_task.download_novel("https://order.test/list_2.html", tmp_path, delay=0, chapter_workers=1)
+    text = output.read_text(encoding="utf-8")
+
+    assert text.index("第1章") < text.index("第2章") < text.index("第3章")
