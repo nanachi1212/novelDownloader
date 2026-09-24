@@ -288,7 +288,28 @@ def test_error_page_and_original_json_cache_are_not_misused_or_overwritten(tmp_p
 def test_challenge_page_with_matching_chapter_id_never_enters_preview(tmp_path):
     page = _saved_reader(tmp_path)
     page.write_text(page.read_text(encoding="utf-8").replace(
-        "<p>原字元", "<div>bdturing-verify</div><p>原字元"), encoding="utf-8")
+        "<p>原字元", '<div id="bdturing-verify"></div><p>原字元'), encoding="utf-8")
     with pytest.raises(ReaderImportError, match="人機驗證要求"):
         import_reader_html(page, "999", "101", "第一章", tmp_path / "preview")
     assert not (tmp_path / "preview").exists()
+
+
+def test_gate_phrases_in_prose_or_script_do_not_reject_public_reader(tmp_path):
+    page = _saved_reader(tmp_path)
+    source = page.read_text(encoding="utf-8")
+    source = source.replace("原字元㐂", "他說请先登录，又提到购买本章與bdturing-verify")
+    source = source.replace("window.secret = 'ignored'", "window.secret = '人机验证'")
+    page.write_text(source, encoding="utf-8")
+    preview = import_reader_html(page, "999", "101", "第一章", tmp_path / "preview")
+    assert preview.paragraph_count == 2
+
+
+def test_reader_body_containing_only_gate_notice_is_rejected(tmp_path):
+    page = _saved_reader(tmp_path)
+    source = page.read_text(encoding="utf-8")
+    first = source.index("<p>")
+    second_end = source.index("</p>", source.index("</p>", first) + 4) + 4
+    source = source[:first] + "<p>请先登录</p>" + source[second_end:]
+    page.write_text(source, encoding="utf-8")
+    with pytest.raises(ReaderImportError, match="人機驗證要求"):
+        import_reader_html(page, "999", "101", "第一章", tmp_path / "preview")

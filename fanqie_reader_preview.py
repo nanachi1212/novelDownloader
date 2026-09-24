@@ -22,10 +22,8 @@ MAX_HTML_BYTES = 12 * 1024 * 1024
 MAX_CSS_BYTES = 3 * 1024 * 1024
 MAX_FONT_BYTES = 32 * 1024 * 1024
 SAVED_FONT_HOSTS = {"lf6-awef.bytetos.com", "lf3-awef.bytetos.com"}
-GATE_MARKERS = (
-    "bdturing-verify", "x-vc-bdturing-parameters", "人机验证", "人機驗證",
-    "请先登录", "請先登入", "购买本章", "購買本章",
-)
+GATE_UI_IDS = {"bdturing-verify", "captcha-container", "login-dialog", "paywall"}
+GATE_ONLY_TEXT = {"人机验证", "人機驗證", "请先登录", "請先登入", "购买本章", "購買本章"}
 FONT_FACE_RE = re.compile(r"@font-face\s*\{([^}]+)\}", re.I | re.S)
 CSS_RULE_RE = re.compile(r"([^{}]+)\{([^{}]*)\}", re.S)
 URL_RE = re.compile(r"url\(\s*(['\"]?)(.*?)\1\s*\)", re.I)
@@ -163,6 +161,23 @@ def _reader_body(soup: BeautifulSoup):
             if paragraphs:
                 return node, paragraphs
     raise ReaderImportError("保存頁面找不到含正文段落的閱讀器區塊，沒有匯入任何資料。")
+
+
+def _has_gate_ui(soup: BeautifulSoup, paragraphs: list[str]) -> bool:
+    """Recognize an actual gate widget or a reader body consisting of a gate notice."""
+    for meta in soup.find_all("meta"):
+        if (meta.get("name") or "").lower() == "x-vc-bdturing-parameters":
+            return True
+    for node in soup.find_all(True):
+        if node.name in {"script", "style", "template"}:
+            continue
+        identifiers = [node.get("id", ""), *(node.get("class") or [])]
+        if any(value.lower() in GATE_UI_IDS for value in identifiers if isinstance(value, str)):
+            return True
+        if node.name == "iframe" and "bdturing-verify" in (node.get("src") or "").lower():
+            return True
+    stripped = [paragraph.strip() for paragraph in paragraphs if paragraph.strip()]
+    return len(stripped) <= 2 and bool(stripped) and all(text in GATE_ONLY_TEXT for text in stripped)
 
 
 def _require_saved_asset(path: Path, html_path: Path) -> None:
@@ -437,15 +452,16 @@ def import_reader_html(source_path, book_id: str, item_id: str, title: str, prev
     if source_path.suffix.lower() not in {".html", ".htm"}:
         raise ReaderImportError("請選取瀏覽器保存的 .html／.htm 閱讀頁。")
     raw = _read_bounded(source_path, MAX_HTML_BYTES, "HTML")
-    page_text = raw.decode("utf-8", errors="replace").lower()
-    if any(marker in page_text for marker in GATE_MARKERS):
-        raise ReaderImportError("保存頁面含登入、購買或人機驗證要求，未將其當作正文保存。")
-    soup = BeautifulSoup(raw, "html.parser")
+    # Fanqie saved reader pages are UTF-8. Do not let an isolated short gate
+    # notice be misidentified as another encoding by byte-level heuristics.
+    soup = BeautifulSoup(raw, "html.parser", from_encoding="utf-8")
     _validate_identity(soup, str(book_id), str(item_id))
     content_node, _nodes = _reader_body(soup)
     paragraphs = _paragraph_text(content_node)
     if not paragraphs:
         raise ReaderImportError("閱讀器區塊沒有可保存的正文段落。")
+    if _has_gate_ui(soup, paragraphs):
+        raise ReaderImportError("保存頁面含登入、購買或人機驗證要求，未將其當作正文保存。")
     css = _extract_css(soup, source_path)
     family = _effective_font(content_node, css)
     paragraph_families = {_effective_font(p, css) for p in content_node.find_all("p")}
