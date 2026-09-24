@@ -6,6 +6,7 @@ from downloader_task import atomic_write_text, chapter_number_warning, fetch_par
 from sites.base import Chapter
 from sites.base import BookInfo
 from sites.base import SiteAdapter
+from sites.generic import GenericAdapter
 from fetcher import FetchError
 
 
@@ -581,6 +582,8 @@ def test_catalog_expansion_and_pagination_are_followed(monkeypatch, tmp_path):
             return ["page2"] if url == "full-catalog" else []
 
         def parse_catalog_page(self, html, url):
+            if url == "full-catalog":
+                return self.parse_catalog(html)  # download_novel 現在也用這個 hook 解析首頁
             assert url == "page2"
             return BookInfo("", "", [Chapter("第3章", "chapter-3"), Chapter("第4章", "chapter-4")])
 
@@ -691,6 +694,50 @@ def _merge_test_setup(monkeypatch, tmp_path, titles):
     monkeypatch.setattr(downloader_task, "cache_root", lambda: tmp_path / "cache")
     monkeypatch.setattr(downloader_task, "load_rules", lambda _site: [])
     return downloader_task
+
+
+def test_catalog_expansion_resolves_relative_links_against_the_expanded_url(monkeypatch, tmp_path):
+    """展開完整目錄後,頁面上的相對連結要對著展開後的網址解析,不是展開前的舊網址
+    (Codex review 抓到的 bug:GenericAdapter._base_url 沒有跟著 full_catalog_url 更新)。
+    """
+    import downloader_task
+
+    class ExpandingAdapter(GenericAdapter):
+        domains = ["expand.test"]
+
+        def catalog_url(self, url):
+            self._base_url = url
+            return url
+
+    pages = {
+        "https://expand.test/n/1": '<a href="/n/1/full.html">查看全部章節</a>',
+        "https://expand.test/n/1/full.html": "".join(
+            f'<a href="{i}.html">第{i}章</a>' for i in range(1, 6)),
+    }
+    fetched_urls = []
+
+    class FakeFetcher:
+        def __init__(self, **_kwargs):
+            self.throttle = None
+
+        def get(self, url, **_kwargs):
+            fetched_urls.append(url)
+            return pages.get(url, f"<article>{'正文內容' * 20}</article>")  # 湊滿 GenericAdapter 首章長度檢查
+
+        def polite_sleep(self):
+            pass
+
+    monkeypatch.setattr(downloader_task, "Fetcher", FakeFetcher)
+    monkeypatch.setattr(downloader_task, "get_adapter", lambda _url: ExpandingAdapter())
+    monkeypatch.setattr(downloader_task, "cache_root", lambda: tmp_path / "cache")
+    monkeypatch.setattr(downloader_task, "load_rules", lambda _site: [])
+
+    downloader_task.download_novel("https://expand.test/n/1", tmp_path, delay=0, chapter_workers=1)
+
+    expected = {f"https://expand.test/n/1/{i}.html" for i in range(1, 6)}
+    assert expected.issubset(set(fetched_urls))
+    wrong = {f"https://expand.test/n/{i}.html" for i in range(1, 6)}  # 用舊網址解析會得到這種錯誤路徑
+    assert not (wrong & set(fetched_urls))
 
 
 def test_merged_split_chapters_use_a_separate_cache_namespace(monkeypatch, tmp_path):

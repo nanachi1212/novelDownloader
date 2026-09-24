@@ -155,7 +155,20 @@ class GenericAdapter(SiteAdapter):
                 if nxt:
                     found.append(nxt)
 
+        def _is_pagination_marked(el):
+            for node in (el, *el.parents):
+                if not hasattr(node, "get"):
+                    continue
+                marker = f'{" ".join(node.get("class", []))} {node.get("id", "")}'.lower()
+                if "page" in marker or "pagination" in marker:
+                    return True
+            return False
+
         for select in soup.find_all("select"):
+            # 沒有分頁標記就跳過:字體大小、編碼、主題切換這類 <select> 也常常
+            # 剛好有兩個以上帶數字的 option(如 16/18),不能單靠數字判斷。
+            if not _is_pagination_marked(select):
+                continue
             options = [o for o in select.find_all("option") if o.get("value") and re.search(r"\d", o["value"])]
             if len(options) < 2:
                 continue
@@ -225,7 +238,7 @@ class GenericAdapter(SiteAdapter):
             return [(container, urljoin(base, container["href"]), text)] if text else []
         dts = container.find_all("dt") if container.name == "dl" else []
         if dts:
-            return self._dl_links_skip_latest(dts, base)
+            return self._dl_links_skip_latest(container, dts, base)
         items = []
         for a in container.find_all("a", href=True):
             text = a.get_text(strip=True)
@@ -233,31 +246,39 @@ class GenericAdapter(SiteAdapter):
                 items.append((a, urljoin(base, a["href"]), text))
         return items
 
-    def _dl_links_skip_latest(self, dts, base):
+    def _dl_links_skip_latest(self, container, dts, base):
+        """收集 <dl> 內所有 <dd> 連結;文件順序,不受多個 <dt>(多卷小說常見)影響。
+
+        只有在「明確看起來」是最新章節小清單時(第一個 dt 就命中 LATEST_HEADING_RE)
+        才略過起始那幾個 dd,直到找到「正文/全文/章節目錄」這類完整清單的 dt 為止;
+        找不到這種邊界或第一個 dt 本來就不是「最新章節」,就完整收下所有 dd,
+        不能因為多卷小說用多個 dt 分卷就只留下最後一卷。
+        """
         keywords = FULL_LIST_HEADING_RE
         extra = self.catalog_skip_until
         if extra:
             extra = [extra] if isinstance(extra, str) else list(extra)
             keywords = re.compile(FULL_LIST_HEADING_RE.pattern + "|" +
                                    "|".join(re.escape(e) for e in extra))
-        start_dt = dts[0]
-        if len(dts) > 1:
-            for dt in dts:
-                if keywords.search(dt.get_text(strip=True)):
-                    start_dt = dt
-                    break
-            else:
-                start_dt = dts[-1]
-        items, node = [], start_dt.find_next_sibling()
-        while node is not None:
-            if getattr(node, "name", None) == "dt":
-                break
-            if getattr(node, "name", None) == "dd":
-                a = node.find("a", href=True)
-                text = a.get_text(strip=True) if a else ""
-                if text:
-                    items.append((a, urljoin(base, a["href"]), text))
-            node = node.find_next_sibling()
+
+        boundary = None
+        if len(dts) > 1 and LATEST_HEADING_RE.search(dts[0].get_text(strip=True)):
+            boundary = next((dt for dt in dts[1:] if keywords.search(dt.get_text(strip=True))),
+                             dts[1])
+
+        items, skipping = [], boundary is not None
+        for child in container.find_all(["dt", "dd"]):
+            if skipping:
+                if child is boundary:
+                    skipping = False
+                else:
+                    continue
+            if child.name != "dd":
+                continue
+            a = child.find("a", href=True)
+            text = a.get_text(strip=True) if a else ""
+            if text:
+                items.append((a, urljoin(base, a["href"]), text))
         return items
 
     def _heuristic_parse_catalog(self, soup, base, title, author):

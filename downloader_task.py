@@ -322,7 +322,10 @@ def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
         fetcher.polite_sleep()
         catalog_html = fetcher.get(catalog_url, retries=retries)
 
-    book = adapter.parse_catalog(catalog_html)
+    # 用 parse_catalog_page 而非 parse_catalog:展開完整目錄後,GenericAdapter
+    # 需要知道實際抓到的是哪個網址,才能正確解析頁面上的相對連結
+    # (catalog_url() 當初記下的是展開前的舊網址)。
+    book = adapter.parse_catalog_page(catalog_html, catalog_url)
     template_name = getattr(adapter, "template_name", None)
     if template_name:
         callback("catalog", 0, 1, f"[自動偵測] 目錄套用內建模板: {template_name}")

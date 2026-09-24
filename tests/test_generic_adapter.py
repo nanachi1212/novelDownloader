@@ -28,6 +28,60 @@ def test_biquge_dl_dd_template_skips_latest_chapters_box():
     assert adapter.template_name == "#list dl"
 
 
+def test_multi_volume_dl_catalog_keeps_all_volumes_not_just_the_last():
+    """多卷小說常見:多個 <dt> 各自是卷名(不是「最新章節/正文」這種邊界字樣),
+    沒有邊界就不該只挑最後一個 dt 之後的內容,不然會把前面幾卷整個丟掉。
+    """
+    adapter = GenericAdapter()
+    adapter.catalog_url("https://example.test/book/1.html")
+    html = """
+    <div id="list">
+    <dl>
+      <dt>第一卷</dt>
+      <dd><a href="/book/1/1.html">第一章</a></dd>
+      <dd><a href="/book/1/2.html">第二章</a></dd>
+      <dt>第二卷</dt>
+      <dd><a href="/book/1/3.html">第三章</a></dd>
+      <dd><a href="/book/1/4.html">第四章</a></dd>
+      <dd><a href="/book/1/5.html">第五章</a></dd>
+      <dd><a href="/book/1/6.html">第六章</a></dd>
+      <dd><a href="/book/1/7.html">第七章</a></dd>
+    </dl>
+    </div>
+    """
+    book = adapter.parse_catalog(html)
+    assert [c.title for c in book.chapters] == [
+        "第一章", "第二章", "第三章", "第四章", "第五章", "第六章", "第七章"]
+
+
+def test_biquge_dl_dd_boundary_still_keeps_chapters_after_a_later_volume_heading():
+    """「最新章節」之後的完整清單若又用多個 dt 分卷,不能在遇到下一個 dt
+    (例如「第二卷」)時就提早停止收集。
+    """
+    adapter = GenericAdapter()
+    adapter.catalog_url("https://example.test/book/2.html")
+    html = """
+    <div id="list">
+    <dl>
+      <dt>最新章節</dt>
+      <dd><a href="/book/2/7.html">第七章</a></dd>
+      <dt>正文</dt>
+      <dd><a href="/book/2/1.html">第一章</a></dd>
+      <dd><a href="/book/2/2.html">第二章</a></dd>
+      <dt>第二卷</dt>
+      <dd><a href="/book/2/3.html">第三章</a></dd>
+      <dd><a href="/book/2/4.html">第四章</a></dd>
+      <dd><a href="/book/2/5.html">第五章</a></dd>
+      <dd><a href="/book/2/6.html">第六章</a></dd>
+      <dd><a href="/book/2/7.html">第七章</a></dd>
+    </dl>
+    </div>
+    """
+    book = adapter.parse_catalog(html)
+    assert [c.title for c in book.chapters] == [
+        "第一章", "第二章", "第三章", "第四章", "第五章", "第六章", "第七章"]
+
+
 def test_container_template_matches_by_id_without_dl():
     adapter = GenericAdapter()
     adapter.catalog_url("https://example.test/n/1")
@@ -134,13 +188,20 @@ def test_catalog_page_urls_next_page_link():
 
 def test_catalog_page_urls_select_pagination_excludes_current_page():
     adapter = GenericAdapter()
-    html = ('<select><option value="/list_1.html">1</option>'
+    html = ('<div class="pagination"><select><option value="/list_1.html">1</option>'
             '<option value="/list_2.html">2</option>'
-            '<option value="/list_3.html">3</option></select>')
+            '<option value="/list_3.html">3</option></select></div>')
     assert adapter.catalog_page_urls(html, "https://example.test/list_1.html") == [
         "https://example.test/list_2.html",
         "https://example.test/list_3.html",
     ]
+
+
+def test_catalog_page_urls_ignores_unmarked_select_like_font_size_picker():
+    """沒有分頁標記的 <select>(例如字體大小選單剛好是兩個數字)不能被誤判成分頁。"""
+    adapter = GenericAdapter()
+    html = '<select id="fontsize"><option value="16">16px</option><option value="18">18px</option></select>'
+    assert adapter.catalog_page_urls(html, "https://example.test/book/1.html") == []
 
 
 def test_parse_chapter_strips_hidden_and_fullwidth_watermark_lines():
