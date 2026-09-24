@@ -313,33 +313,77 @@ def _effective_font(node, css_blocks: list[str]) -> str:
     return ""
 
 
-def _font_attribute_rules(css_blocks: list[str], name: str) -> list[tuple[list[str], str]]:
-    pattern = re.compile(rf"{re.escape(name)}\s*:\s*([^;}}]+)", re.I)
+FONT_ATTRIBUTE_RE = re.compile(r"(?<![\w-])(font-weight|font-style|font)\s*:\s*([^;]+)", re.I)
+FONT_SIZE_RE = re.compile(
+    r"^(?:\d+(?:\.\d+)?(?:px|pt|em|rem|%)|xx-small|x-small|small|medium|large|x-large|xx-large)(?:/\S+)?$",
+    re.I,
+)
+
+
+def _font_shorthand_attribute(value: str, name: str) -> str:
+    if value in {"inherit", "unset", "initial", "revert", "revert-layer"}:
+        return value
+    tokens = value.split()
+    size_index = next((index for index, token in enumerate(tokens) if FONT_SIZE_RE.fullmatch(token)), None)
+    if size_index is None or size_index == len(tokens) - 1:
+        raise ReaderImportError("正文使用無法安全解析的 font 簡寫，未建立字型閱讀預覽。")
+    style, weight = "normal", "normal"
+    for token in tokens[:size_index]:
+        if token in {"italic", "oblique"}:
+            style = token
+        elif token in {"bold", "bolder", "lighter"} or re.fullmatch(r"[1-9]00", token):
+            weight = token
+        elif token not in {"normal", "small-caps"}:
+            raise ReaderImportError("正文使用無法安全解析的 font 簡寫，未建立字型閱讀預覽。")
+    return weight if name == "font-weight" else style
+
+
+def _font_attribute_declarations(declarations: str, name: str) -> list[tuple[str, str, bool]]:
+    found = []
+    for match in FONT_ATTRIBUTE_RE.finditer(declarations):
+        property_name, raw_value = match.group(1).lower(), match.group(2).strip().lower()
+        important = bool(re.search(r"!important\s*$", raw_value, re.I))
+        value = re.sub(r"\s*!important\s*$", "", raw_value, flags=re.I).strip()
+        if property_name in {name, "font"}:
+            found.append((property_name, value, important))
+    return found
+
+
+def _font_attribute_rules(css_blocks: list[str], name: str) -> list[tuple[list[str], str, str, bool, int]]:
     rules = []
     for block in css_blocks:
         for selector_text, declarations in CSS_RULE_RE.findall(block):
             if selector_text.lstrip().startswith("@"):
                 continue
-            match = pattern.search(declarations)
-            if match:
-                value = re.sub(r"\s*!important\s*$", "", match.group(1), flags=re.I).strip().lower()
-                rules.append((selector_text.split(","), value))
+            selectors = selector_text.split(",")
+            for property_name, value, important in _font_attribute_declarations(declarations, name):
+                rules.append((selectors, property_name, value, important, len(rules)))
     return rules
 
 
-def _declared_font_attribute(node, rules: list[tuple[list[str], str]], name: str) -> str:
-    pattern = re.compile(rf"{re.escape(name)}\s*:\s*([^;}}]+)", re.I)
-    inline_match = pattern.search(node.get("style", ""))
-    if inline_match:
-        return re.sub(r"\s*!important\s*$", "", inline_match.group(1), flags=re.I).strip().lower()
-    selected = ""
-    for selectors, value in rules:
-        if any(_selector_matches(selector, node) for selector in selectors):
-            selected = value
-    return selected
+def _selector_specificity(selector: str) -> int:
+    parts = selector.strip().split()
+    return (100 * selector.count("#") + 10 * selector.count(".")
+            + sum(bool(re.match(r"^[A-Za-z][\w-]*", part)) for part in parts))
 
 
-def _effective_font_attribute(node, rules: list[tuple[list[str], str]], name: str,
+def _declared_font_attribute(node, rules: list[tuple[list[str], str, str, bool, int]], name: str) -> str:
+    candidates = []
+    for selectors, property_name, value, important, order in rules:
+        specificity = max((_selector_specificity(selector) for selector in selectors
+                           if _selector_matches(selector, node)), default=None)
+        if specificity is not None:
+            candidates.append(((int(important), specificity, order), property_name, value))
+    for order, (property_name, value, important) in enumerate(
+            _font_attribute_declarations(node.get("style", ""), name)):
+        candidates.append(((int(important), 1000, len(rules) + order), property_name, value))
+    if not candidates:
+        return ""
+    _priority, property_name, value = max(candidates, key=lambda candidate: candidate[0])
+    return _font_shorthand_attribute(value, name) if property_name == "font" else value
+
+
+def _effective_font_attribute(node, rules: list[tuple[list[str], str, str, bool, int]], name: str,
                               default: str) -> str:
     current = node
     while isinstance(current, Tag):

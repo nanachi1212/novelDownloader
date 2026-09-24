@@ -345,6 +345,60 @@ def test_import_rejects_mixed_paragraph_weights(tmp_path):
         import_reader_html(page, "999", "101", "第一章", tmp_path / "preview")
 
 
+def test_import_respects_css_specificity_for_reader_weight(tmp_path):
+    page = _saved_reader(tmp_path)
+    assets = tmp_path / "chapter_files"
+    medium = b"wOF2medium-font"
+    (assets / "medium.woff2").write_bytes(medium)
+    (assets / "reader.css").write_text(
+        "@font-face {font-family:MappedFont;font-weight:400;src:url('font.woff2');}"
+        "@font-face {font-family:MappedFont;font-weight:500;src:url('medium.woff2');}"
+        "#reader-content {font-family:MappedFont;}"
+        "#reader-content p {font-weight:500;} p {font-weight:400;}", encoding="utf-8")
+    preview = import_reader_html(page, "999", "101", "第一章", tmp_path / "preview")
+    assert preview.font_sha256 == hashlib.sha256(medium).hexdigest()
+
+
+def test_import_respects_important_over_specificity_and_inline_style(tmp_path):
+    page = _saved_reader(tmp_path)
+    assets = tmp_path / "chapter_files"
+    medium = b"wOF2medium-font"
+    (assets / "medium.woff2").write_bytes(medium)
+    (assets / "reader.css").write_text(
+        "@font-face {font-family:MappedFont;font-weight:400;src:url('font.woff2');}"
+        "@font-face {font-family:MappedFont;font-weight:500;src:url('medium.woff2');}"
+        "#reader-content {font-family:MappedFont;}"
+        "#reader-content p {font-weight:400;} p {font-weight:500!important;}", encoding="utf-8")
+    source = page.read_text(encoding="utf-8").replace("<p>", '<p style="font-weight:400">')
+    page.write_text(source, encoding="utf-8")
+    preview = import_reader_html(page, "999", "101", "第一章", tmp_path / "preview")
+    assert preview.font_sha256 == hashlib.sha256(medium).hexdigest()
+
+
+def test_import_resolves_font_shorthand_weight_and_style(tmp_path):
+    page = _saved_reader(tmp_path)
+    assets = tmp_path / "chapter_files"
+    italic = b"wOF2italic-medium-font"
+    (assets / "italic.woff2").write_bytes(italic)
+    (assets / "reader.css").write_text(
+        "@font-face {font-family:MappedFont;font-weight:400;src:url('font.woff2');}"
+        "@font-face {font-family:MappedFont;font-weight:500;font-style:italic;src:url('italic.woff2');}"
+        "#reader-content {font-family:MappedFont;font:italic 500 18px MappedFont;}"
+        ".unrelated {font:var(--unknown);}", encoding="utf-8")
+    preview = import_reader_html(page, "999", "101", "第一章", tmp_path / "preview")
+    assert preview.font_sha256 == hashlib.sha256(italic).hexdigest()
+
+
+def test_import_rejects_unresolved_active_font_shorthand(tmp_path):
+    page = _saved_reader(tmp_path)
+    css = tmp_path / "chapter_files" / "reader.css"
+    css.write_text("@font-face {font-family:MappedFont;src:url('font.woff2');}"
+                   "#reader-content {font-family:MappedFont;font:var(--unknown);}",
+                   encoding="utf-8")
+    with pytest.raises(ReaderImportError, match="font 簡寫"):
+        import_reader_html(page, "999", "101", "第一章", tmp_path / "preview")
+
+
 def test_import_rejects_font_family_that_could_break_generated_style(tmp_path):
     page = _saved_reader(tmp_path, family="MappedFont</style>")
     with pytest.raises(ReaderImportError, match="不安全字元"):
