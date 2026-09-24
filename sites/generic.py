@@ -17,7 +17,7 @@ import os.path
 import re
 import unicodedata
 from collections import Counter
-from urllib.parse import urljoin, urlparse
+from urllib.parse import parse_qsl, unquote, urljoin, urlparse
 
 from bs4 import BeautifulSoup
 
@@ -83,7 +83,7 @@ NON_CHAPTER_LINK_TEXT = re.compile(
 )
 # 分頁容器的 class/id 必須整個 token 相符,不接受 bare "page"(太容易誤中版面
 # 標記,如 <body class="page">、#page-wrapper)。
-PAGER_TOKENS = {"pager", "pagination", "pages", "pagelist", "page-list", "pagenav", "page-nav"}
+PAGER_TOKENS = {"pager", "pagination", "pages", "pagelist", "page-list", "pagenav", "page-nav", "page"}
 
 # 防盜/反爬安全網
 HIDDEN_STYLE_RE = re.compile(r"display\s*:\s*none|visibility\s*:\s*hidden", re.I)
@@ -133,6 +133,7 @@ class GenericAdapter(SiteAdapter):
         soup = BeautifulSoup(html, "lxml")
         host = urlparse(url).netloc
         pattern = self._expand_pattern()
+        candidates = []
         for a in soup.find_all("a", href=True):
             text = a.get_text(strip=True)
             if not text or not pattern.search(text) or EXPAND_LINK_EXCLUDE.search(text):
@@ -144,8 +145,32 @@ class GenericAdapter(SiteAdapter):
             parsed = urlparse(nxt)
             if parsed.scheme not in ("http", "https") or parsed.netloc != host or nxt == url:
                 continue
-            return nxt
-        return None
+            if nxt not in candidates:
+                candidates.append(nxt)
+        if len(candidates) == 1:
+            return candidates[0]
+
+        # 多個「全部章節」連結常見於推薦卡片。只在唯一候選與目前書目有
+        # 明確路徑關係時選它，避免跟到推薦書或全站目錄。
+        current = urlparse(url)
+        current_params = parse_qsl(current.query, keep_blank_values=True)
+
+        def route_stem(path):
+            path = unquote(path).rstrip("/") or "/"
+            path = re.sub(r"/(?:index|catalog|list|full)(?:\.[^/]+)?$", "", path, flags=re.I)
+            return re.sub(r"\.[^/.]+$", "", path).rstrip("/") or "/"
+
+        current_stem = route_stem(current.path)
+        related = []
+        for candidate in candidates:
+            parsed = urlparse(candidate)
+            candidate_params = parse_qsl(parsed.query, keep_blank_values=True)
+            if not all(param in candidate_params for param in current_params):
+                continue
+            candidate_stem = route_stem(parsed.path)
+            if candidate_stem == current_stem or candidate_stem.startswith(current_stem + "/"):
+                related.append(candidate)
+        return related[0] if len(related) == 1 else None
 
     def catalog_page_urls(self, html: str, url: str) -> list:
         # 這個 hook 只會用在目錄頁(不是章節正文頁),分頁控制項通常在章節清單
@@ -163,12 +188,22 @@ class GenericAdapter(SiteAdapter):
             return nxt
 
         def _has_pager_token(el):
-            # 用「整個 class/id token」比對,不是子字串:bare "page" 常出現在
-            # <body class="page">、#page-wrapper 這類跟分頁無關的外層版面標記,
-            # 子字串比對會把它們也誤判成分頁容器。
+            # 用「整個 class/id token」比對,不是子字串。單獨的 "page" 很常
+            # 被當作整頁版面 class,只有本身含至少兩個數字頁碼連結的窄容器才接受。
             classes = [c.lower() for c in (el.get("class") or [])]
             node_id = (el.get("id") or "").lower()
-            return any(c in PAGER_TOKENS for c in classes) or node_id in PAGER_TOKENS
+            tokens = [c for c in classes if c in PAGER_TOKENS]
+            if node_id in PAGER_TOKENS:
+                tokens.append(node_id)
+            if not tokens:
+                return False
+            if "page" not in tokens:
+                return True
+            if getattr(el, "name", None) in ("body", "html"):
+                return False
+            numeric_links = [a for a in el.find_all("a", href=True)
+                             if (a.get_text(strip=True) or "").isdigit()]
+            return len(numeric_links) >= 2
 
         def _is_pagination_marked(el, max_depth=4):
             # 只往上找幾層(附近的分頁容器),不要一路走到 body/html,

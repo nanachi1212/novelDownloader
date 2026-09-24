@@ -2,6 +2,8 @@ from zipfile import ZipFile
 import threading
 import time
 
+import pytest
+
 from downloader_task import atomic_write_text, chapter_number_warning, fetch_parsed_chapter, merge_split_chapters, safe_filename, save_progress, unique_chapters, write_epub, write_txt_from_files
 from sites.base import Chapter
 from sites.base import BookInfo
@@ -723,6 +725,53 @@ def test_catalog_pagination_continues_past_a_duplicate_alias_page(monkeypatch, t
     text = output.read_text(encoding="utf-8")
 
     assert "第1章" in text and "第2章" in text  # page2 沒有被 dup-alias 連累而漏抓
+
+
+def test_catalog_pagination_fails_instead_of_silently_truncating_at_page_cap(monkeypatch, tmp_path):
+    import downloader_task
+
+    class FakeFetcher:
+        def __init__(self, **_kwargs):
+            self.throttle = None
+
+        def get(self, url, **_kwargs):
+            return url
+
+        def polite_sleep(self):
+            pass
+
+    class LongCatalogAdapter(SiteAdapter):
+        encoding = "utf-8"
+        domains = ["long-catalog.test"]
+        is_generic = False
+
+        def catalog_url(self, _url): return "https://long-catalog.test/page/0"
+        def meta_url(self, _url): return None
+        def full_catalog_url(self, _html, _url): return None
+
+        def catalog_page_urls(self, _html, url):
+            page = int(url.rsplit("/", 1)[-1])
+            return [f"https://long-catalog.test/page/{page + 1}"]
+
+        def parse_catalog_page(self, _html, url):
+            page = int(url.rsplit("/", 1)[-1])
+            return BookInfo("長目錄", "", [Chapter(f"第{page + 1}章", f"chapter-{page + 1}")])
+
+        def parse_catalog(self, html): return self.parse_catalog_page(html, html)
+        def book_id(self, _url): return "long-catalog"
+        def chapter_source_url(self, _html, _url): return None
+        def next_page_url(self, _html, _url): return None
+        def parse_chapter(self, html, title=""): return f"正文 {html}"
+
+    monkeypatch.setattr(downloader_task, "Fetcher", FakeFetcher)
+    monkeypatch.setattr(downloader_task, "get_adapter", lambda _url: LongCatalogAdapter())
+    monkeypatch.setattr(downloader_task, "cache_root", lambda: tmp_path / "cache")
+    monkeypatch.setattr(downloader_task, "load_rules", lambda _site: [])
+    monkeypatch.setattr(downloader_task, "MAX_CATALOG_PAGES", 2)
+
+    with pytest.raises(ValueError, match="目錄分頁超過安全上限"):
+        downloader_task.download_novel(
+            "https://long-catalog.test/book", tmp_path, delay=0, chapter_workers=1)
 
 
 def _merge_test_setup(monkeypatch, tmp_path, titles):

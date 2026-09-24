@@ -388,6 +388,10 @@ def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
         for more in adapter.catalog_page_urls(next_html, next_url):
             if more not in visited_pages and more not in queue:
                 queue.append(more)
+    if any(urlparse(pending).netloc == host and pending not in visited_pages for pending in queue):
+        raise ValueError(
+            f"目錄分頁超過安全上限 {MAX_CATALOG_PAGES} 頁,已停止以免輸出不完整目錄"
+        )
     if pages_fetched:
         book.chapters = [c for _url, chapters in order_catalog_pages(catalog_pages) for c in chapters]
         callback("catalog", 0, 1,

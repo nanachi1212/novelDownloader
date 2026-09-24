@@ -199,6 +199,17 @@ def test_full_catalog_url_ignores_javascript_and_cross_origin_links():
     assert adapter.full_catalog_url(html, "https://example.test/book/1.html") is None
 
 
+def test_full_catalog_url_prefers_the_current_books_expand_link_over_recommendations():
+    adapter = GenericAdapter()
+    html = '''
+    <div class="recommend"><a href="/book/456/full.html">全部章節</a></div>
+    <div id="catalog"><a href="/book/123/full.html">全部章節</a></div>
+    '''
+    assert adapter.full_catalog_url(html, "https://example.test/book/123.html") == (
+        "https://example.test/book/123/full.html"
+    )
+
+
 def test_catalog_page_urls_next_page_link():
     adapter = GenericAdapter()
     html = '<div id="pager"><a href="/book/1/index_2.html">下一頁</a></div>'
@@ -258,6 +269,31 @@ def test_pagination_marker_rejects_bare_page_layout_class():
         '</body>'
     )
     assert adapter.catalog_page_urls(html, "https://example.test/n/1") == []
+
+
+def test_catalog_page_urls_accepts_numeric_links_in_page_class_container():
+    adapter = GenericAdapter()
+    html = '''
+    <div class="page">
+      <a href="/list_1.html">1</a>
+      <a href="/list_2.html">2</a>
+      <a href="/list_3.html">3</a>
+    </div>
+    '''
+    assert adapter.catalog_page_urls(html, "https://example.test/list_1.html") == [
+        "https://example.test/list_2.html",
+        "https://example.test/list_3.html",
+    ]
+
+
+def test_catalog_page_urls_rejects_body_page_class_even_with_numeric_links():
+    adapter = GenericAdapter()
+    html = '''
+    <body class="page">
+      <a href="/list_2.html">2</a><a href="/list_3.html">3</a>
+    </body>
+    '''
+    assert adapter.catalog_page_urls(html, "https://example.test/list_1.html") == []
 
 
 def test_catalog_page_urls_select_pagination_excludes_current_page():
