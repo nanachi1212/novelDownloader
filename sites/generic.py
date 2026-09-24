@@ -279,6 +279,9 @@ class GenericAdapter(SiteAdapter):
         self._base_url = url
         return self.parse_catalog(html)
 
+    def parse_catalog_metadata(self, html: str):
+        return self._title_author(BeautifulSoup(html, "lxml"))
+
     # --- 目錄 ---
     def parse_catalog(self, html: str) -> BookInfo:
         soup = BeautifulSoup(html, "lxml")

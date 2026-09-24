@@ -394,10 +394,10 @@ def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
 
     catalog_html = fetcher.get(catalog_url, retries=retries)
     full_url = adapter.full_catalog_url(catalog_html, catalog_url)
-    collapsed_book = None
+    collapsed_metadata = None
     if full_url and full_url != catalog_url:
         if getattr(adapter, "is_generic", False) and not title:
-            collapsed_book = adapter.parse_catalog_page(catalog_html, catalog_url)
+            collapsed_metadata = adapter.parse_catalog_metadata(catalog_html)
         callback("catalog", 0, 1, "[目錄] 已展開完整目錄")
         catalog_url = full_url
         fetcher.polite_sleep()
@@ -407,11 +407,11 @@ def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
     # 需要知道實際抓到的是哪個網址,才能正確解析頁面上的相對連結
     # (catalog_url() 當初記下的是展開前的舊網址)。
     book = adapter.parse_catalog_page(catalog_html, catalog_url)
-    if collapsed_book:
+    if collapsed_metadata:
         if not book.title or book.title == "未知書名":
-            book.title = collapsed_book.title
+            book.title = collapsed_metadata[0]
         if not book.author:
-            book.author = collapsed_book.author
+            book.author = collapsed_metadata[1]
     template_name = getattr(adapter, "template_name", None)
     if template_name:
         callback("catalog", 0, 1, f"[自動偵測] 目錄套用內建模板: {template_name}")

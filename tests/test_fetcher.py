@@ -136,6 +136,21 @@ def test_soft_block_200_page_is_treated_as_rate_limit_and_not_returned(monkeypat
     assert len(fetcher.session.calls) == 2
 
 
+def test_soft_block_visible_text_ignores_inline_script_and_style(monkeypatch):
+    monkeypatch.setattr("fetcher.time.sleep", lambda _seconds: None)
+    block = (
+        "<html><head><style>" + "x" * 250 + "</style></head>"
+        "<body><script>" + "const padding='" + "x" * 500 + "';</script>"
+        "<p>請稍後再試</p></body></html>"
+    )
+    expected = "<html><body><p>真正的章節正文</p></body></html>"
+    fetcher = Fetcher(delay=2.0)
+    fetcher.session = FakeSession([FakeResponse(block), FakeResponse(expected)])
+
+    assert fetcher.get("https://example.test/ch1") == expected
+    assert len(fetcher.session.calls) == 2
+
+
 def test_soft_block_does_not_false_positive_on_short_real_content(monkeypatch):
     """單純字數少的正文不能被誤判成軟封鎖頁(必須同時命中關鍵字才算)。"""
     fetcher = Fetcher()

@@ -23,6 +23,7 @@ HUMAN_CHECK = re.compile(r"human verification|g-recaptcha|hcaptcha", re.I)
 SOFT_BLOCK_MAX_LEN = 3000
 SOFT_BLOCK_MAX_VISIBLE = 300   # 去掉標籤後的可見文字也必須很短,才像是「只有一句限速提示」的頁面
 TAG_RE = re.compile(r"<[^>]+>")
+SCRIPT_STYLE_RE = re.compile(r"<(?:script|style)\b[^>]*>.*?</(?:script|style)\s*>", re.I | re.S)
 SOFT_BLOCK_RE = re.compile(
     r"訪問過於頻繁|访问过于频繁|操作太頻繁|操作太频繁|請求過快|请求过快|"
     r"請稍後再試|请稍后再试|too many requests|rate limit",
@@ -153,8 +154,9 @@ class Fetcher:
                     continue
 
                 if r.status_code == 200 and "Just a moment" not in text:
+                    visible_text = TAG_RE.sub("", SCRIPT_STYLE_RE.sub("", text)).strip()
                     if (len(text) < SOFT_BLOCK_MAX_LEN and SOFT_BLOCK_RE.search(text)
-                            and len(TAG_RE.sub("", text).strip()) < SOFT_BLOCK_MAX_VISIBLE):
+                            and len(visible_text) < SOFT_BLOCK_MAX_VISIBLE):
                         # 200 但內容其實是「訪問過於頻繁」之類的軟封鎖頁:當限速處理,
                         # 絕不能把這種頁面當正文回傳(呼叫端會誤寫入快取)。
                         wait = self.throttle.back_off()

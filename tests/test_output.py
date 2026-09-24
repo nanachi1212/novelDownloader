@@ -854,12 +854,12 @@ def test_catalog_expansion_resolves_relative_links_against_the_expanded_url(monk
             return url
 
     pages = {
-        "https://expand.test/n/1": (
+        "https://expand.test/books/foo/": (
             '<meta property="og:novel:book_name" content="Expanded Metadata Fallback">'
             '<meta property="og:novel:author" content="Preview Author">'
-            '<a href="/n/1/full.html">查看全部章節</a>'
+            '<a href="/books/foo/chapters/">查看全部章節</a>'
         ),
-        "https://expand.test/n/1/full.html": "".join(
+        "https://expand.test/books/foo/chapters/": "".join(
             f'<a href="{i}.html">第{i}章</a>' for i in range(1, 6)),
     }
     fetched_urls = []
@@ -881,12 +881,12 @@ def test_catalog_expansion_resolves_relative_links_against_the_expanded_url(monk
     monkeypatch.setattr(downloader_task, "load_rules", lambda _site: [])
 
     output = downloader_task.download_novel(
-        "https://expand.test/n/1", tmp_path, delay=0, chapter_workers=1)
+        "https://expand.test/books/foo/", tmp_path, delay=0, chapter_workers=1)
 
-    expected = {f"https://expand.test/n/1/{i}.html" for i in range(1, 6)}
+    expected = {f"https://expand.test/books/foo/chapters/{i}.html" for i in range(1, 6)}
     assert expected.issubset(set(fetched_urls))
     assert output.name == "Expanded Metadata Fallback.txt"
-    wrong = {f"https://expand.test/n/{i}.html" for i in range(1, 6)}  # 用舊網址解析會得到這種錯誤路徑
+    wrong = {f"https://expand.test/books/foo/{i}.html" for i in range(1, 6)}
     assert not (wrong & set(fetched_urls))
 
 
