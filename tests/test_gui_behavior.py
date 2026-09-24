@@ -162,15 +162,45 @@ def test_fanqie_preview_dialog_directory_and_selection_controls(monkeypatch, tmp
         assert dialog.tree.topLevelItem(0).text(2) == "第一章"
         assert dialog.tree.topLevelItem(0).text(3).startswith("公開")
         assert not dialog.tree.topLevelItem(1).isDisabled()
+        assert dialog.raw_state.text() == "原始資料：尚未保存"
+        assert dialog.reader_state.text() == "字型閱讀預覽：不可用"
+        assert dialog.text_state.text() == "文字尚未還原"
         dialog.tree.setCurrentItem(dialog.tree.topLevelItem(0))
         app.processEvents()
         assert dialog.save_selected_button.isEnabled()
         assert not dialog.preview_button.isEnabled()
+        assert dialog.import_reader_button.isEnabled()
+        assert not dialog.reading_preview_button.isEnabled()
         dialog.tree.setCurrentItem(dialog.tree.topLevelItem(1))
         app.processEvents()
         assert not dialog.save_selected_button.isEnabled()
         assert dialog.original_button.isEnabled()
+        assert not dialog.import_reader_button.isEnabled()
         assert "視覺預覽不代表文字已還原" in dialog.warning.text()
+    finally:
+        dialog.close()
+
+
+def test_reader_html_import_cancel_keeps_chapter_and_cache_unchanged(monkeypatch, tmp_path):
+    monkeypatch.setenv("NOVELDOWNLOADER_DATA_DIR", str(tmp_path / "profile"))
+    app = QApplication.instance() or QApplication([])
+    dialog = FanqiePreviewDialog("https://fanqienovel.com/page/123456789")
+    try:
+        dialog.book_id = "123456789"
+        dialog.chapters = [FanqieChapter("100", "第一章", "第一卷", 1, {
+            "needPay": 0, "isPaidPublication": False,
+            "isPaidStory": False, "isChapterLock": False,
+        })]
+        dialog._populate_directory()
+        dialog.tree.setCurrentItem(dialog.tree.topLevelItem(0))
+        dialog._choose_reader_source = lambda: ""
+
+        dialog.import_reader_page()
+
+        assert dialog.tree.currentItem().text(2) == "第一章"
+        assert not (dialog.cache_root / "123456789" / "100").exists()
+        assert dialog.import_reader_button.isEnabled()
+        assert not dialog.reading_preview_button.isEnabled()
     finally:
         dialog.close()
 
