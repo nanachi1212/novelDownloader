@@ -7,6 +7,7 @@ import html
 import json
 import os
 import re
+import secrets
 import shutil
 import tempfile
 from dataclasses import dataclass
@@ -20,7 +21,11 @@ from app_paths import write_json
 MAX_HTML_BYTES = 12 * 1024 * 1024
 MAX_CSS_BYTES = 3 * 1024 * 1024
 MAX_FONT_BYTES = 32 * 1024 * 1024
-READER_ID_RE = re.compile(r"/reader/(\d+)")
+SAVED_FONT_HOSTS = {"lf6-awef.bytetos.com", "lf3-awef.bytetos.com"}
+GATE_MARKERS = (
+    "bdturing-verify", "x-vc-bdturing-parameters", "人机验证", "人機驗證",
+    "请先登录", "請先登入", "购买本章", "購買本章",
+)
 FONT_FACE_RE = re.compile(r"@font-face\s*\{([^}]+)\}", re.I | re.S)
 CSS_RULE_RE = re.compile(r"([^{}]+)\{([^{}]*)\}", re.S)
 URL_RE = re.compile(r"url\(\s*(['\"]?)(.*?)\1\s*\)", re.I)
@@ -40,6 +45,40 @@ class ReaderPreview:
     font_family: str
     font_sha256: str
     paragraph_count: int
+
+
+def reading_preview_status(preview_root, book_id: str, item_id: str) -> tuple[bool, str]:
+    """Check a published preview and its exact font bytes before enabling it."""
+    if not re.fullmatch(r"\d{1,32}", str(book_id)) or not re.fullmatch(r"\d{1,32}", str(item_id)):
+        return False, "書籍或章節 ID 無效"
+    folder = Path(preview_root) / str(book_id) / str(item_id)
+    manifest_path = folder / "manifest.json"
+    if not manifest_path.is_file():
+        return False, "尚未匯入"
+    try:
+        manifest = json.loads(_read_bounded(manifest_path, 64 * 1024, "預覽索引"))
+        digest = manifest.get("font_sha256", "")
+        if (manifest.get("book_id") != str(book_id)
+                or manifest.get("item_id") != str(item_id)
+                or manifest.get("text_restored") is not False
+                or not isinstance(digest, str)
+                or not re.fullmatch(r"[a-f0-9]{64}", digest)):
+            return False, "預覽索引與所選章節不符"
+        if not (folder / "preview.html").is_file():
+            return False, "預覽頁缺失"
+        fonts = [folder / "fonts" / f"{digest}{suffix}"
+                 for suffix in (".woff2", ".woff", ".ttf", ".otf")]
+        available = [path for path in fonts if path.is_file() and not path.is_symlink()]
+        if len(available) != 1:
+            return False, "字型檔缺失或不唯一"
+        font_bytes = _read_bounded(available[0], MAX_FONT_BYTES, "字型檔")
+        if not _font_signature(font_bytes, available[0].suffix):
+            return False, "字型格式無效"
+        if hashlib.sha256(font_bytes).hexdigest() != digest:
+            return False, "字型內容與預覽索引不符"
+        return True, "字型檔已核對，開啟後仍須確認瀏覽器載入狀態"
+    except (ReaderImportError, OSError, ValueError, TypeError, AttributeError):
+        return False, "預覽資料無法驗證"
 
 
 def _safe_source_file(value: Path, root: Path) -> Path:
@@ -144,9 +183,14 @@ def _validate_identity(soup: BeautifulSoup, book_id: str, item_id: str) -> None:
     og_url = soup.find("meta", property="og:url")
     if og_url and og_url.get("content"):
         identity_urls.append(og_url["content"])
-    reader_ids = {found for value in identity_urls for found in READER_ID_RE.findall(value)}
-    if item_id not in reader_ids:
+    if not identity_urls:
         raise ReaderImportError("無法從 canonical／og:url 確認保存頁面屬於所選章節 itemId。")
+    for value in identity_urls:
+        parsed = urlparse(value)
+        if (parsed.scheme != "https" or parsed.hostname != "fanqienovel.com"
+                or parsed.username or parsed.password
+                or parsed.path != f"/reader/{item_id}"):
+            raise ReaderImportError("canonical／og:url 來源或章節 itemId 與所選章節不符。")
 
     book_ids = set()
     for tag in soup.find_all("meta"):
@@ -197,7 +241,7 @@ def _first_family(match) -> str:
     value = match.group(1).strip()
     if value[:1] in {"'", '"'} and value[-1:] == value[:1]:
         return re.sub(r"\\([\\'\"])", r"\1", value[1:-1]).strip()
-    return value.split(",", 1)[0].strip().strip("'\"")
+    return re.sub(r"\s*!important\s*$", "", value.split(",", 1)[0], flags=re.I).strip().strip("'\"")
 
 
 def _declared_font(node, css_blocks: list[str]) -> str:
@@ -217,16 +261,30 @@ def _declared_font(node, css_blocks: list[str]) -> str:
     return selected
 
 
+def _effective_font(node, css_blocks: list[str]) -> str:
+    """Resolve the inherited family actually applied to a reader element."""
+    current = node
+    while isinstance(current, Tag):
+        family = _declared_font(current, css_blocks)
+        if family and family.lower() not in {"inherit", "unset", "initial", "revert", "revert-layer"}:
+            return family
+        current = current.parent
+    return ""
+
+
 def _font_resource(css_blocks: list[str], family: str, html_path: Path) -> tuple[bytes, str]:
     root = html_path.parent
-    for block in css_blocks:
-        for face in FONT_FACE_RE.findall(block):
-            declared = FAMILY_RE.search(face)
-            if not declared or _first_family(declared) != family:
-                continue
-            src = URL_RE.search(face)
-            if not src:
-                continue
+    remote_font_missing = False
+    faces = [face for block in css_blocks for face in FONT_FACE_RE.findall(block)
+             if (declared := FAMILY_RE.search(face)) and _first_family(declared) == family]
+
+    def weight_priority(face):
+        match = re.search(r"font-weight\s*:\s*([^;}]+)", face, re.I)
+        weight = match.group(1).strip().lower() if match else "normal"
+        return 0 if weight in {"normal", "400"} else 1
+
+    for face in sorted(faces, key=weight_priority):
+        for src in URL_RE.finditer(face):
             uri = src.group(2).strip()
             if uri.lower().startswith("data:"):
                 header, separator, payload = uri.partition(",")
@@ -248,8 +306,20 @@ def _font_resource(css_blocks: list[str], family: str, html_path: Path) -> tuple
                 return data, suffix
             parsed = urlparse(uri)
             if parsed.scheme or parsed.netloc or uri.startswith("//"):
-                raise ReaderImportError("此字型仍是遠端資源；請在正常瀏覽器中保存頁面及資源後再匯入。")
-            path = _safe_source_file(Path(uri.split("?", 1)[0].split("#", 1)[0]), root)
+                if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+                    raise ReaderImportError("字型來源網址不是有效的 HTTPS 資源。")
+                if parsed.hostname.lower() not in SAVED_FONT_HOSTS or not parsed.path.startswith("/obj/awesome-font/c/"):
+                    raise ReaderImportError("此字型仍是遠端資源，來源不是已核對的番茄字型資源；原始資料未更動。")
+                name = unquote(Path(parsed.path).name)
+                if not re.fullmatch(r"[a-f0-9]{12,64}(?:-(?:500|700))?\.(?:woff2?|ttf|otf)", name, re.I):
+                    raise ReaderImportError("字型來源檔名無效。")
+                local = Path(f"{html_path.stem}_files") / name
+                if not (root / local).exists():
+                    remote_font_missing = True
+                    continue
+                path = _safe_source_file(local, root)
+            else:
+                path = _safe_source_file(Path(uri.split("?", 1)[0].split("#", 1)[0]), root)
             _require_saved_asset(path, html_path)
             suffix = path.suffix.lower()
             if suffix not in {".woff", ".woff2", ".ttf", ".otf"}:
@@ -258,6 +328,8 @@ def _font_resource(css_blocks: list[str], family: str, html_path: Path) -> tuple
             if not _font_signature(data, suffix):
                 raise ReaderImportError("字型檔案內容與副檔名不符。")
             return data, suffix
+    if remote_font_missing:
+        raise ReaderImportError("此字型仍是遠端資源，保存的 _files 資料夾沒有同名字型檔；原始資料未更動。")
     raise ReaderImportError("找不到正文實際使用字型的本機字型檔；原始資料未更動。")
 
 
@@ -287,10 +359,14 @@ def _paragraph_text(node) -> list[str]:
     return paragraphs
 
 
-def _preview_document(title: str, paragraphs: list[str], family: str, relative_font: str) -> str:
+def _preview_document(title: str, paragraphs: list[str], family: str, relative_font: str,
+                      item_id: str, next_item_id: str | None = None) -> str:
     safe_family = json.dumps(family, ensure_ascii=True)
     safe_font = html.escape(relative_font, quote=True)
     body = "\n".join(f"<p>{html.escape(text, quote=True).replace(chr(10), '<br>')}</p>" for text in paragraphs)
+    original = f"https://fanqienovel.com/reader/{item_id}"
+    next_link = (f'<a href="https://fanqienovel.com/reader/{next_item_id}" '
+                 'rel="noopener noreferrer">下一章（原站）</a>' if next_item_id else "")
     return f"""<!doctype html>
 <html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; font-src 'self'; script-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
@@ -307,17 +383,63 @@ p{{margin:0 0 1.2em;white-space:pre-wrap}} #font-status{{font:14px/1.5 sans-seri
  else{{e.textContent='字型載入失敗，視覺內容不可靠，請回原站閱讀。';}}
 }}).catch(function(){{document.getElementById('font-status').textContent='字型載入失敗，請檢查保存的資源並回原站閱讀。';}});</script>
 <footer>文字尚未還原。這是字型視覺預覽；複製、搜尋、朗讀及一般文字匯出可能不正確。</footer>
+<nav aria-label="章節導覽"><p>本機只保存這一章。<a href="{original}" rel="noopener noreferrer">回原站閱讀此章</a>
+{next_link}</p></nav>
 </body></html>"""
 
 
-def import_reader_html(source_path, book_id: str, item_id: str, title: str, preview_root) -> ReaderPreview:
+def _make_import_stage(parent: Path, item_id: str) -> Path:
+    if os.name != "nt":
+        return Path(tempfile.mkdtemp(prefix=f".{item_id}-import-", dir=parent))
+    # Inherit the private user-data directory ACL. Python's mode 0700 can
+    # exclude the Windows sandbox token from the directory it just created.
+    for _ in range(8):
+        stage = parent / f".{item_id}-import-{secrets.token_hex(8)}"
+        try:
+            stage.mkdir()
+            return stage
+        except FileExistsError:
+            continue
+    raise ReaderImportError("無法建立不重複的匯入暫存資料夾。")
+
+
+def _reader_sidecars(paragraphs: list[str], source_bytes: bytes, book_id: str,
+                     item_id: str, family: str, font_digest: str) -> tuple[dict, dict]:
+    raw_text = {"paragraphs": paragraphs}
+    canonical = json.dumps(raw_text, ensure_ascii=False, sort_keys=True,
+                           separators=(",", ":")).encode("utf-8")
+    metadata = {
+        "book_id": book_id,
+        "item_id": item_id,
+        "source_kind": "browser_saved_html",
+        "source_url": f"https://fanqienovel.com/reader/{item_id}",
+        "source_html_sha256": hashlib.sha256(source_bytes).hexdigest(),
+        "raw_text_sha256": hashlib.sha256(canonical).hexdigest(),
+        "font_family": family,
+        "font_sha256": font_digest,
+        "used_codepoints": sorted({ord(char) for paragraph in paragraphs for char in paragraph}),
+        "used_pua_codepoints": sorted({ord(char) for paragraph in paragraphs for char in paragraph
+                                       if 0xE000 <= ord(char) <= 0xF8FF}),
+        "decoder_version": None,
+        "text_restored": False,
+    }
+    return raw_text, metadata
+
+
+def import_reader_html(source_path, book_id: str, item_id: str, title: str, preview_root,
+                       next_item_id: str | None = None) -> ReaderPreview:
     """Import a user-saved reader page and atomically create a safe isolated preview."""
     if not re.fullmatch(r"\d{1,32}", str(book_id)) or not re.fullmatch(r"\d{1,32}", str(item_id)):
         raise ReaderImportError("書籍 ID 與章節 itemId 必須是目錄中的數字 ID。")
+    if next_item_id is not None and not re.fullmatch(r"\d{1,32}", str(next_item_id)):
+        raise ReaderImportError("下一章 itemId 必須是目錄中的數字 ID。")
     source_path = Path(source_path).resolve(strict=True)
     if source_path.suffix.lower() not in {".html", ".htm"}:
         raise ReaderImportError("請選取瀏覽器保存的 .html／.htm 閱讀頁。")
     raw = _read_bounded(source_path, MAX_HTML_BYTES, "HTML")
+    page_text = raw.decode("utf-8", errors="replace").lower()
+    if any(marker in page_text for marker in GATE_MARKERS):
+        raise ReaderImportError("保存頁面含登入、購買或人機驗證要求，未將其當作正文保存。")
     soup = BeautifulSoup(raw, "html.parser")
     _validate_identity(soup, str(book_id), str(item_id))
     content_node, _nodes = _reader_body(soup)
@@ -325,8 +447,8 @@ def import_reader_html(source_path, book_id: str, item_id: str, title: str, prev
     if not paragraphs:
         raise ReaderImportError("閱讀器區塊沒有可保存的正文段落。")
     css = _extract_css(soup, source_path)
-    family = _declared_font(content_node, css)
-    paragraph_families = {_declared_font(p, css) for p in content_node.find_all("p")}
+    family = _effective_font(content_node, css)
+    paragraph_families = {_effective_font(p, css) for p in content_node.find_all("p")}
     paragraph_families.discard("")
     if family and paragraph_families - {family}:
         raise ReaderImportError("章節段落使用不同字型，無法安全套用單一字型預覽。")
@@ -336,13 +458,15 @@ def import_reader_html(source_path, book_id: str, item_id: str, title: str, prev
         raise ReaderImportError("章節段落使用不同字型，無法安全套用單一字型預覽。")
     if not family:
         raise ReaderImportError("無法確認正文實際使用的字型，無法宣稱字型閱讀預覽可用。")
+    if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{0,63}", family):
+        raise ReaderImportError("正文字型名稱含不安全字元，無法建立預覽。")
     font_bytes, suffix = _font_resource(css, family, source_path)
     digest = hashlib.sha256(font_bytes).hexdigest()
     root = Path(preview_root) / str(book_id) / str(item_id)
     if root.exists():
         raise ReaderImportError("此書籍／章節已有匯入資料；為保留原始資料，本次不覆寫。")
     root.parent.mkdir(parents=True, exist_ok=True)
-    stage = Path(tempfile.mkdtemp(prefix=f".{item_id}-import-", dir=root.parent))
+    stage = _make_import_stage(root.parent, str(item_id))
     fonts = stage / "fonts"
     fonts.mkdir()
     font_name = digest + suffix
@@ -356,8 +480,14 @@ def import_reader_html(source_path, book_id: str, item_id: str, title: str, prev
         os.replace(temp_font, font_path)
         # Keep a byte-for-byte copy for later diagnosis; never execute/open it.
         shutil.copyfile(source_path, stage / "source.html")
+        raw_text, source_metadata = _reader_sidecars(
+            paragraphs, raw, str(book_id), str(item_id), family, digest
+        )
+        write_json(stage / "raw_text.json", raw_text)
+        write_json(stage / "source_metadata.json", source_metadata)
         preview_path = stage / "preview.html"
-        document = _preview_document(title, paragraphs, family, f"fonts/{font_name}")
+        document = _preview_document(title, paragraphs, family, f"fonts/{font_name}",
+                                     str(item_id), str(next_item_id) if next_item_id else None)
         temp_preview = stage / "preview.html.tmp"
         with temp_preview.open("x", encoding="utf-8", newline="\n") as stream:
             stream.write(document)

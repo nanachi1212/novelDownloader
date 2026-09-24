@@ -163,7 +163,7 @@ def test_fanqie_preview_dialog_directory_and_selection_controls(monkeypatch, tmp
         assert dialog.tree.topLevelItem(0).text(3).startswith("公開")
         assert not dialog.tree.topLevelItem(1).isDisabled()
         assert dialog.raw_state.text() == "原始資料：尚未保存"
-        assert dialog.reader_state.text() == "字型閱讀預覽：不可用"
+        assert dialog.reader_state.text() == "字型閱讀預覽：不可用（尚未匯入）"
         assert dialog.text_state.text() == "文字尚未還原"
         dialog.tree.setCurrentItem(dialog.tree.topLevelItem(0))
         app.processEvents()

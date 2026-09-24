@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from fanqie_reader_preview import ReaderImportError, import_reader_html
+from fanqie_reader_preview import ReaderImportError, import_reader_html, reading_preview_status
 
 
 FONT_BYTES = b"wOF2" + b"synthetic-font-data"
@@ -34,7 +34,8 @@ def _saved_reader(tmp_path, *, item_id="101", book_id="999", font=True, family="
 
 def test_import_creates_sanitized_item_isolated_preview_with_hashed_font(tmp_path):
     page = _saved_reader(tmp_path)
-    preview = import_reader_html(page, "999", "101", "第一章 <標題>", tmp_path / "app" / "preview" / "fanqie")
+    preview = import_reader_html(page, "999", "101", "第一章 <標題>",
+                                 tmp_path / "app" / "preview" / "fanqie", next_item_id="102")
     html = preview.preview_path.read_text(encoding="utf-8")
     manifest = json.loads((preview.preview_path.parent / "manifest.json").read_text(encoding="utf-8"))
 
@@ -46,9 +47,31 @@ def test_import_creates_sanitized_item_isolated_preview_with_hashed_font(tmp_pat
     assert "&lt;script&gt;保留為文字&lt;/script&gt;" in html
     assert "第一章 &lt;標題&gt;" in html
     assert "文字尚未還原" in html
+    assert 'href="https://fanqienovel.com/reader/102"' in html
+    assert "下一章（原站）" in html and "本機只保存這一章" in html
     assert manifest["text_restored"] is False
     assert manifest["book_id"] == "999" and manifest["item_id"] == "101"
     assert preview.preview_path.parent.is_relative_to(tmp_path / "app" / "preview" / "fanqie")
+    assert reading_preview_status(tmp_path / "app" / "preview" / "fanqie", "999", "101")[0]
+    raw_text = json.loads((preview.preview_path.parent / "raw_text.json").read_text(encoding="utf-8"))
+    metadata = json.loads((preview.preview_path.parent / "source_metadata.json").read_text(encoding="utf-8"))
+    assert raw_text["paragraphs"][0].startswith("原字元㐂")
+    assert metadata["source_url"] == "https://fanqienovel.com/reader/101"
+    assert metadata["font_sha256"] == preview.font_sha256
+    assert ord("㐂") in metadata["used_codepoints"]
+    assert metadata["used_pua_codepoints"] == []
+    assert metadata["decoder_version"] is None and metadata["text_restored"] is False
+
+
+def test_preview_status_rejects_missing_or_changed_font(tmp_path):
+    page = _saved_reader(tmp_path)
+    root = tmp_path / "preview"
+    preview = import_reader_html(page, "999", "101", "第一章", root)
+    font = preview.preview_path.parent / "fonts" / f"{preview.font_sha256}.woff2"
+    font.write_bytes(FONT_BYTES + b"changed")
+    assert reading_preview_status(root, "999", "101") == (False, "字型內容與預覽索引不符")
+    font.unlink()
+    assert reading_preview_status(root, "999", "101") == (False, "字型檔缺失或不唯一")
 
 
 @pytest.mark.parametrize("item_id,book_id", [("wrong", "999"), ("101", "other")])
@@ -114,6 +137,31 @@ def test_import_resolves_first_family_from_fallback_list(tmp_path, declaration):
     assert preview.font_family == "MappedFont"
 
 
+@pytest.mark.parametrize("outer_style,extra_css", [
+    ('style="font-family: MappedFont, serif"', ""),
+    ('class="font-MappedFont"', ".font-MappedFont {font-family: MappedFont, serif;}"),
+    ('class="muye-reader-box font-MappedFont"',
+     ".font-MappedFont {font-family: MappedFont, serif;}"
+     ".muye-reader-box * {font-family:inherit!important;}"),
+])
+def test_import_resolves_reader_font_inherited_from_outer_box(tmp_path, outer_style, extra_css):
+    page = _saved_reader(tmp_path)
+    css = page.parent / "chapter_files" / "reader.css"
+    css.write_text(
+        "@font-face {font-family:MappedFont;src:url('font.woff2');}" + extra_css,
+        encoding="utf-8",
+    )
+    page.write_text(
+        '<html><head><link rel="canonical" href="https://fanqienovel.com/reader/101">'
+        '<link rel="stylesheet" href="chapter_files/reader.css"></head><body>'
+        f'<div {outer_style}><div class="muye-reader-content"><p>原字元㐂</p>'
+        '<p>第二段</p></div></div></body></html>', encoding="utf-8",
+    )
+    preview = import_reader_html(page, "999", "101", "第一章", tmp_path / "preview")
+    assert preview.font_family == "MappedFont"
+    assert preview.paragraph_count == 2
+
+
 def test_import_rejects_missing_or_mismatched_font_without_publishing_cache(tmp_path):
     missing = _saved_reader(tmp_path, font=False)
     with pytest.raises(ReaderImportError, match="找不到瀏覽器保存的 CSS 或字型資源"):
@@ -138,6 +186,81 @@ def test_import_rejects_remote_font_and_preserves_existing_data(tmp_path):
     assert marker.read_text(encoding="utf-8") == "user data"
 
 
+def test_import_uses_exact_named_local_asset_for_remote_font_declaration(tmp_path):
+    page = _saved_reader(tmp_path)
+    css_path = tmp_path / "chapter_files" / "reader.css"
+    css_path.write_text(
+        "@font-face {font-family:'MappedFont';"
+        "src:url('https://lf6-awef.bytetos.com/obj/awesome-font/c/abcdef0123456789.woff2') format('woff2');}"
+        "#reader-content {font-family:'MappedFont';}", encoding="utf-8",
+    )
+    (tmp_path / "chapter_files" / "abcdef0123456789.woff2").write_bytes(FONT_BYTES)
+    preview = import_reader_html(page, "999", "101", "第一章", tmp_path / "preview")
+    assert preview.font_sha256 == hashlib.sha256(FONT_BYTES).hexdigest()
+    assert b"bytetos.com" not in preview.preview_path.read_bytes()
+
+
+def test_import_rejects_wrong_named_or_invalid_local_remote_font(tmp_path):
+    page = _saved_reader(tmp_path)
+    css_path = tmp_path / "chapter_files" / "reader.css"
+    css_path.write_text(
+        "@font-face {font-family:'MappedFont';"
+        "src:url('https://lf6-awef.bytetos.com/obj/awesome-font/c/abcdef0123456789.woff2');}"
+        "#reader-content {font-family:'MappedFont';}", encoding="utf-8",
+    )
+    with pytest.raises(ReaderImportError, match="沒有同名字型檔"):
+        import_reader_html(page, "999", "101", "第一章", tmp_path / "preview")
+    (tmp_path / "chapter_files" / "abcdef0123456789.woff2").write_bytes(b"wrong font")
+    with pytest.raises(ReaderImportError, match="副檔名不符"):
+        import_reader_html(page, "999", "101", "第一章", tmp_path / "preview")
+    assert not (tmp_path / "preview").exists()
+
+
+def test_import_rejects_unsafe_next_chapter_link(tmp_path):
+    page = _saved_reader(tmp_path)
+    with pytest.raises(ReaderImportError, match="下一章 itemId"):
+        import_reader_html(page, "999", "101", "第一章", tmp_path / "preview",
+                           next_item_id='102" onclick="run()')
+    assert not (tmp_path / "preview").exists()
+
+
+def test_import_selects_normal_face_when_bold_face_appears_first(tmp_path):
+    page = _saved_reader(tmp_path)
+    assets = tmp_path / "chapter_files"
+    normal = b"wOF2normal-font"
+    bold = b"wOF2bold-font"
+    (assets / "normal.woff2").write_bytes(normal)
+    (assets / "bold.woff2").write_bytes(bold)
+    (assets / "reader.css").write_text(
+        "@font-face {font-family:MappedFont;font-weight:700;src:url('bold.woff2');}"
+        "@font-face {font-family:MappedFont;font-weight:400;src:url('normal.woff2');}"
+        "#reader-content {font-family:MappedFont;}", encoding="utf-8",
+    )
+    preview = import_reader_html(page, "999", "101", "第一章", tmp_path / "preview")
+    assert preview.font_sha256 == hashlib.sha256(normal).hexdigest()
+
+
+def test_import_rejects_font_family_that_could_break_generated_style(tmp_path):
+    page = _saved_reader(tmp_path, family="MappedFont</style>")
+    with pytest.raises(ReaderImportError, match="不安全字元"):
+        import_reader_html(page, "999", "101", "第一章", tmp_path / "preview")
+    assert not (tmp_path / "preview").exists()
+
+
+@pytest.mark.parametrize("url", [
+    "https://evil.example/reader/101",
+    "http://fanqienovel.com/reader/101",
+    "https://fanqienovel.com/reader/102",
+])
+def test_import_rejects_wrong_canonical_origin_or_item(tmp_path, url):
+    page = _saved_reader(tmp_path)
+    page.write_text(page.read_text(encoding="utf-8").replace(
+        "https://fanqienovel.com/reader/101", url), encoding="utf-8")
+    with pytest.raises(ReaderImportError, match="來源或章節 itemId"):
+        import_reader_html(page, "999", "101", "第一章", tmp_path / "preview")
+    assert not (tmp_path / "preview").exists()
+
+
 def test_import_rejects_unsafe_local_resource_escape(tmp_path):
     page = _saved_reader(tmp_path)
     css_path = tmp_path / "chapter_files" / "reader.css"
@@ -160,3 +283,12 @@ def test_error_page_and_original_json_cache_are_not_misused_or_overwritten(tmp_p
         import_reader_html(error_page, "999", "101", "第一章", preview_root)
     assert raw_cache.read_text(encoding="utf-8") == '{"source_response_text":"keep raw"}'
     assert not (tmp_path / "cache").exists()
+
+
+def test_challenge_page_with_matching_chapter_id_never_enters_preview(tmp_path):
+    page = _saved_reader(tmp_path)
+    page.write_text(page.read_text(encoding="utf-8").replace(
+        "<p>原字元", "<div>bdturing-verify</div><p>原字元"), encoding="utf-8")
+    with pytest.raises(ReaderImportError, match="人機驗證要求"):
+        import_reader_html(page, "999", "101", "第一章", tmp_path / "preview")
+    assert not (tmp_path / "preview").exists()
