@@ -10,7 +10,7 @@ from pathlib import Path
 
 from bs4 import BeautifulSoup
 
-from fanqie_decoder import decode_chapter
+from fanqie_decoder import DecodeFailed, decode_chapter
 from fetcher import FetchError, Fetcher
 from state_io import read_json, write_json
 from .base import BookInfo, Chapter, SiteAdapter
@@ -307,7 +307,7 @@ class FanqieAdapter(SiteAdapter):
                        {"book_id": self._book_id, "mode": self._decoder_mode})
 
     def retryable_parse_error(self, error):
-        return isinstance(error, FanqieError) and not isinstance(error, AccessVerificationRequired)
+        return isinstance(error, (FanqieError, DecodeFailed)) and not isinstance(error, AccessVerificationRequired)
 
     def chapter_source_url(self, html, url):
         match = re.fullmatch(r"https://fanqienovel\.com/reader/(\d+)", url)
