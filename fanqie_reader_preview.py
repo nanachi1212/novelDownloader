@@ -155,8 +155,11 @@ def _extract_css(soup: BeautifulSoup, html_path: Path) -> list[str]:
     total_external_bytes = 0
     total_inline_bytes = 0
     for node in soup.find_all(["style", "link"]):
-        if node.name == "link" and "stylesheet" not in (node.get("rel") or []):
+        rel = (node.get("rel") or []) if node.name == "link" else []
+        if node.name == "link" and "stylesheet" not in rel:
             continue
+        if "alternate" in rel:
+            raise ReaderImportError("保存頁面含有無法確認的候選 CSS 樣式表。")
         if node.name == "link" and node.has_attr("disabled"):
             continue
         media = (node.get("media") or "").strip().lower()
@@ -641,7 +644,10 @@ def _font_resource(css_blocks: list[str], family: str, weight: int, style: str,
            for face in matching_faces):
         raise ReaderImportError("正文字型使用 unicode-range 分割字型，無法安全建立單一字型預覽。")
     for face in matching_faces:
-        for src in URL_RE.finditer(_face_descriptor(face, "src")):
+        source = _face_descriptor(face, "src")
+        if re.search(r"\blocal\s*\(", source, re.I):
+            raise ReaderImportError("正文字型來源包含無法核對的本機字型。")
+        for src in URL_RE.finditer(source):
             uri = src.group(2).strip()
             if uri.lower().startswith("data:"):
                 header, separator, payload = uri.partition(",")

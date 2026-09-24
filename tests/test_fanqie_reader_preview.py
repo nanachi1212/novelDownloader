@@ -786,6 +786,25 @@ def test_font_face_uses_last_family_descriptor(tmp_path, families, valid):
             import_reader_html(page, "999", "101", "第一章", tmp_path / "preview")
 
 
+def test_alternate_stylesheet_is_not_treated_as_active(tmp_path):
+    page = _saved_reader(tmp_path)
+    page.write_text(page.read_text(encoding="utf-8").replace(
+        "</head>", '<link rel="alternate stylesheet" href="chapter_files/reader.css"></head>'),
+        encoding="utf-8")
+    with pytest.raises(ReaderImportError, match="候選 CSS"):
+        import_reader_html(page, "999", "101", "第一章", tmp_path / "preview")
+
+
+def test_local_font_source_fails_closed(tmp_path):
+    page = _saved_reader(tmp_path)
+    css = tmp_path / "chapter_files" / "reader.css"
+    css.write_text(css.read_text(encoding="utf-8").replace(
+        "src: url('font.woff2')", "src: local('MappedFont'), url('font.woff2')"),
+        encoding="utf-8")
+    with pytest.raises(ReaderImportError, match="本機字型"):
+        import_reader_html(page, "999", "101", "第一章", tmp_path / "preview")
+
+
 def test_unrelated_input_visibility_selector_does_not_block_import(tmp_path):
     page = _saved_reader(tmp_path)
     css = tmp_path / "chapter_files" / "reader.css"
