@@ -162,6 +162,8 @@ def _extract_css(soup: BeautifulSoup, html_path: Path) -> list[str]:
             raise ReaderImportError("保存頁面含有無法確認的候選 CSS 樣式表。")
         if node.name == "link" and node.has_attr("disabled"):
             continue
+        if node.has_attr("title"):
+            raise ReaderImportError("保存頁面含有無法確認的 CSS 樣式表組。")
         media = (node.get("media") or "").strip().lower()
         if media and media not in {"screen", "all"}:
             raise ReaderImportError("保存頁面含有無法確認的 CSS media 條件。")
@@ -630,6 +632,53 @@ def _face_descriptor(face: str, name: str) -> str:
     return values[-1] if values else ""
 
 
+def _font_source_entries(source: str) -> list[tuple[str, str | None]]:
+    entries = []
+    start = depth = 0
+    quote = ""
+    escaped = False
+    for index, char in enumerate(source):
+        if escaped:
+            escaped = False
+        elif char == "\\" and quote:
+            escaped = True
+        elif quote:
+            if char == quote:
+                quote = ""
+        elif char in "\"'":
+            quote = char
+        elif char == "(":
+            depth += 1
+        elif char == ")" and depth:
+            depth -= 1
+        elif char == "," and not depth:
+            entries.append(source[start:index].strip())
+            start = index + 1
+    entries.append(source[start:].strip())
+    parsed = []
+    for entry in entries:
+        urls = list(URL_RE.finditer(entry))
+        if len(urls) != 1 or entry[:urls[0].start()].strip():
+            raise ReaderImportError("正文字型來源包含無法解析的 CSS 項目。")
+        qualifier = entry[urls[0].end():].strip()
+        if qualifier:
+            match = re.fullmatch(r'''format\(\s*(['"]?)(woff2?|truetype|opentype)\1\s*\)''',
+                                 qualifier, re.I)
+            if not match:
+                raise ReaderImportError("正文字型來源包含無法核對的 format/tech 限定。")
+            font_format = match.group(2).lower()
+        else:
+            font_format = None
+        parsed.append((urls[0].group(2).strip(), font_format))
+    return parsed
+
+
+def _check_font_source_format(suffix: str, declared_format: str | None) -> None:
+    expected = {".woff": "woff", ".woff2": "woff2", ".ttf": "truetype", ".otf": "opentype"}
+    if declared_format and declared_format != expected.get(suffix):
+        raise ReaderImportError("正文字型來源的 format 與實際檔案格式不符。")
+
+
 def _font_resource(css_blocks: list[str], family: str, weight: int, style: str,
                    html_path: Path) -> tuple[bytes, str]:
     root = html_path.parent
@@ -647,8 +696,7 @@ def _font_resource(css_blocks: list[str], family: str, weight: int, style: str,
         source = _face_descriptor(face, "src")
         if re.search(r"\blocal\s*\(", source, re.I):
             raise ReaderImportError("正文字型來源包含無法核對的本機字型。")
-        for src in URL_RE.finditer(source):
-            uri = src.group(2).strip()
+        for uri, declared_format in _font_source_entries(source):
             if uri.lower().startswith("data:"):
                 header, separator, payload = uri.partition(",")
                 if not separator or ";base64" not in header.lower():
@@ -666,6 +714,7 @@ def _font_resource(css_blocks: list[str], family: str, weight: int, style: str,
                     raise ReaderImportError("內嵌字型資料無效。") from exc
                 if not data or len(data) > MAX_FONT_BYTES or not _font_signature(data, suffix):
                     raise ReaderImportError("內嵌字型大小或檔案格式不符。")
+                _check_font_source_format(suffix, declared_format)
                 return data, suffix
             parsed = urlparse(uri)
             if parsed.scheme or parsed.netloc or uri.startswith("//"):
@@ -687,6 +736,7 @@ def _font_resource(css_blocks: list[str], family: str, weight: int, style: str,
             suffix = path.suffix.lower()
             if suffix not in {".woff", ".woff2", ".ttf", ".otf"}:
                 raise ReaderImportError("字型檔案格式不受支援。")
+            _check_font_source_format(suffix, declared_format)
             data = _read_bounded(path, MAX_FONT_BYTES, "字型檔")
             if not _font_signature(data, suffix):
                 raise ReaderImportError("字型檔案內容與副檔名不符。")

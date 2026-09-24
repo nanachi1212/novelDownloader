@@ -73,7 +73,8 @@ def test_import_uses_browser_font_format_hint(tmp_path, suffix, signature, font_
     page = _saved_reader(tmp_path)
     assets = tmp_path / "chapter_files"
     css = assets / "reader.css"
-    css.write_text(css.read_text(encoding="utf-8").replace("font.woff2", f"font.{suffix}"),
+    css.write_text(css.read_text(encoding="utf-8").replace("font.woff2", f"font.{suffix}")
+                   .replace("format('woff2')", f"format('{font_format}')"),
                    encoding="utf-8")
     (assets / f"font.{suffix}").write_bytes(signature + b"synthetic-font")
     preview = import_reader_html(page, "999", "101", "第一章", tmp_path / "preview")
@@ -802,6 +803,32 @@ def test_local_font_source_fails_closed(tmp_path):
         "src: url('font.woff2')", "src: local('MappedFont'), url('font.woff2')"),
         encoding="utf-8")
     with pytest.raises(ReaderImportError, match="本機字型"):
+        import_reader_html(page, "999", "101", "第一章", tmp_path / "preview")
+
+
+@pytest.mark.parametrize("tag", [
+    '<style title="A">#reader-content {display:none}</style>',
+    '<link rel="stylesheet" title="B" href="chapter_files/reader.css">',
+])
+def test_titled_stylesheet_set_fails_closed(tmp_path, tag):
+    page = _saved_reader(tmp_path)
+    page.write_text(page.read_text(encoding="utf-8").replace("</head>", tag + "</head>"),
+                    encoding="utf-8")
+    with pytest.raises(ReaderImportError, match="樣式表組"):
+        import_reader_html(page, "999", "101", "第一章", tmp_path / "preview")
+
+
+@pytest.mark.parametrize("source", [
+    "url('font.woff2') format('unsupported'), url('font.woff2') format('woff2')",
+    "url('font.woff2') tech(color-COLRv1), url('font.woff2')",
+    "url('font.woff2') format('woff')",
+])
+def test_unsupported_font_source_qualifiers_fail_closed(tmp_path, source):
+    page = _saved_reader(tmp_path)
+    css = tmp_path / "chapter_files" / "reader.css"
+    css.write_text(css.read_text(encoding="utf-8").replace(
+        "url('font.woff2') format('woff2')", source), encoding="utf-8")
+    with pytest.raises(ReaderImportError, match="format/tech|format 與"):
         import_reader_html(page, "999", "101", "第一章", tmp_path / "preview")
 
 
