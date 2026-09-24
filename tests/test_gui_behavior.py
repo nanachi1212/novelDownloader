@@ -127,17 +127,17 @@ def test_adding_existing_stopped_url_resumes_it(monkeypatch, tmp_path):
         window.close()
 
 
-def test_fanqie_preview_is_exposed_and_not_queued_for_txt(monkeypatch, tmp_path):
+def test_fanqie_public_chapters_can_be_queued_while_preview_remains_available(monkeypatch, tmp_path):
     app, window = make_window(monkeypatch, tmp_path)
-    messages = []
-    monkeypatch.setattr(QMessageBox, "information", lambda *args: messages.append(args[2]))
     try:
         assert window.fanqie_preview_btn.text() == "番茄小說：預覽支援"
         window.url_input.setText("https://fanqienovel.com/page/123456789")
+        window.end_input.setText("3")
         window.add_btn.click()
         app.processEvents()
-        assert window.jobs == []
-        assert messages and "不能加入 TXT／EPUB" in messages[0]
+        assert len(window.jobs) == 1
+        assert window.jobs[0]["end"] == 3
+        assert window.jobs[0]["url"] == "https://fanqienovel.com/page/123456789"
     finally:
         window.close()
 

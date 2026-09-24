@@ -30,6 +30,9 @@ CSS_RULE_RE = re.compile(r"([^{}]+)\{([^{}]*)\}", re.S)
 URL_RE = re.compile(r"url\(\s*(['\"]?)(.*?)\1\s*\)", re.I)
 FAMILY_RE = re.compile(r'''font-family\s*:\s*("(?:\\.|[^"])*"|'(?:\\.|[^'])*'|[^;}]+)''', re.I)
 CSS_COMMENT_RE = re.compile(r"/\*.*?\*/", re.S)
+CONDITIONAL_CSS_RE = re.compile(
+    r"@(?:media|supports|container|layer|document|keyframes|-webkit-keyframes)\b[^{}]*\{", re.I
+)
 
 
 class ReaderImportError(ValueError):
@@ -172,6 +175,66 @@ def _extract_css(soup: BeautifulSoup, html_path: Path) -> list[str]:
         except FileNotFoundError:
             continue
     return [CSS_COMMENT_RE.sub("", block) for block in blocks]
+
+
+def _closing_css_brace(block: str, opening: int) -> int:
+    depth = 1
+    quote = ""
+    escaped = False
+    for index in range(opening + 1, len(block)):
+        char = block[index]
+        if quote:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = ""
+        elif char in {"'", '"'}:
+            quote = char
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return index
+    raise ReaderImportError("保存的條件式 CSS 不完整，無法核對正文字型。")
+
+
+def _separate_conditional_css(css_blocks: list[str]) -> tuple[list[str], list[str]]:
+    regular, conditional = [], []
+    for block in css_blocks:
+        parts = []
+        position = 0
+        for match in CONDITIONAL_CSS_RE.finditer(block):
+            if match.start() < position:
+                continue
+            parts.append(block[position:match.start()])
+            closing = _closing_css_brace(block, match.end() - 1)
+            conditional.append(block[match.end():closing])
+            position = closing + 1
+        parts.append(block[position:])
+        regular.append("".join(parts))
+    return regular, conditional
+
+
+def _conditional_font_affects_reader(conditional: list[str], reader_node: Tag,
+                                     family: str) -> bool:
+    nodes = [reader_node, *(node for node in reader_node.parents if isinstance(node, Tag)),
+             *reader_node.find_all("p")]
+    for block in conditional:
+        for face in FONT_FACE_RE.findall(block):
+            declared = FAMILY_RE.search(face)
+            if declared and _first_family(declared) == family:
+                return True
+        for selector_text, declarations in CSS_RULE_RE.findall(block):
+            if (not FONT_ATTRIBUTE_RE.search(declarations)
+                    or selector_text.lstrip().startswith("@")):
+                continue
+            if any(_selector_matches(selector, node)
+                   for selector in selector_text.split(",") for node in nodes):
+                return True
+    return False
 
 
 def _reader_body(soup: BeautifulSoup):
@@ -588,7 +651,7 @@ def import_reader_html(source_path, book_id: str, item_id: str, title: str, prev
         raise ReaderImportError("閱讀器區塊沒有可保存的正文段落。")
     if _has_gate_ui(soup, paragraphs):
         raise ReaderImportError("保存頁面含登入、購買或人機驗證要求，未將其當作正文保存。")
-    css = _extract_css(soup, source_path)
+    css, conditional_css = _separate_conditional_css(_extract_css(soup, source_path))
     family_rules = _font_attribute_rules(css, "font-family")
     family = _effective_font_attribute(content_node, family_rules, "font-family", "")
     paragraph_families = {
@@ -607,6 +670,8 @@ def import_reader_html(source_path, book_id: str, item_id: str, title: str, prev
         raise ReaderImportError("無法確認正文實際使用的字型，無法宣稱字型閱讀預覽可用。")
     if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{0,63}", family):
         raise ReaderImportError("正文字型名稱含不安全字元，無法建立預覽。")
+    if _conditional_font_affects_reader(conditional_css, content_node, family):
+        raise ReaderImportError("正文或其字型有條件式 CSS 規則，無法安全確認實際字型。")
     weight_rules = _font_attribute_rules(css, "font-weight")
     style_rules = _font_attribute_rules(css, "font-style")
     paragraph_weights = {_font_weight(_effective_font_attribute(p, weight_rules, "font-weight", "normal"))

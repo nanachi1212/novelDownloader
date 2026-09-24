@@ -437,6 +437,27 @@ def test_import_resolves_family_cascade_and_font_shorthand(tmp_path):
     assert preview.font_sha256 == hashlib.sha256(other).hexdigest()
 
 
+def test_conditional_font_rule_for_reader_fails_closed(tmp_path):
+    page = _saved_reader(tmp_path)
+    css = tmp_path / "chapter_files" / "reader.css"
+    css.write_text(css.read_text(encoding="utf-8") +
+                   "@media print { #reader-content { font-weight:700; } }",
+                   encoding="utf-8")
+    with pytest.raises(ReaderImportError, match="條件式 CSS"):
+        import_reader_html(page, "999", "101", "第一章", tmp_path / "preview")
+    assert not (tmp_path / "preview").exists()
+
+
+def test_unrelated_conditional_font_rule_does_not_override_reader(tmp_path):
+    page = _saved_reader(tmp_path)
+    css = tmp_path / "chapter_files" / "reader.css"
+    css.write_text(css.read_text(encoding="utf-8") +
+                   "@media print { .unrelated { font-weight:700; } }",
+                   encoding="utf-8")
+    preview = import_reader_html(page, "999", "101", "第一章", tmp_path / "preview")
+    assert preview.font_sha256 == hashlib.sha256(FONT_BYTES).hexdigest()
+
+
 def test_import_rejects_font_family_that_could_break_generated_style(tmp_path):
     page = _saved_reader(tmp_path, family="MappedFont</style>")
     with pytest.raises(ReaderImportError, match="不安全字元"):

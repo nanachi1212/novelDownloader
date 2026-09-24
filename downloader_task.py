@@ -269,9 +269,11 @@ def fetch_parsed_chapter(fetcher, adapter, chapter, retries: int, on_retry=None)
 
             def fetch_one(page_url, referer=None):
                 html = fetcher.get(page_url, referer=referer, retries=1)
+                adapter.validate_response(fetcher)
                 source_url = adapter.chapter_source_url(html, page_url)
                 if source_url:
                     html = fetcher.get(source_url, referer=page_url, retries=1)
+                    adapter.validate_response(fetcher)
                 parsed = adapter.parse_chapter(html, title=chapter.title)
                 if not isinstance(parsed, str) or not parsed.strip():
                     raise ValueError(f"章節分頁正文為空: {page_url}")
@@ -388,11 +390,14 @@ def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
     catalog_url = adapter.catalog_url(url)
     meta_url = adapter.meta_url(url)
     if meta_url:
-        title, author = adapter.parse_meta(fetcher.get(meta_url, retries=retries))
+        meta_html = fetcher.get(meta_url, retries=retries)
+        adapter.validate_response(fetcher)
+        title, author = adapter.parse_meta(meta_html)
     else:
         title = author = ""
 
     catalog_html = fetcher.get(catalog_url, retries=retries)
+    adapter.validate_response(fetcher)
     full_url = adapter.full_catalog_url(catalog_html, catalog_url)
     collapsed_metadata = None
     if full_url and full_url != catalog_url:
@@ -402,6 +407,7 @@ def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
         catalog_url = full_url
         fetcher.polite_sleep()
         catalog_html = fetcher.get(catalog_url, retries=retries)
+        adapter.validate_response(fetcher)
 
     # 用 parse_catalog_page 而非 parse_catalog:展開完整目錄後,GenericAdapter
     # 需要知道實際抓到的是哪個網址,才能正確解析頁面上的相對連結
@@ -436,6 +442,7 @@ def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
         pages_fetched += 1
         fetcher.polite_sleep()
         next_html = fetcher.get(next_url, retries=retries)
+        adapter.validate_response(fetcher)
         extra = adapter.parse_catalog_page(next_html, next_url)
         new_chapters = [c for c in extra.chapters if c.url not in seen_chapter_urls]
         if new_chapters:
@@ -491,6 +498,8 @@ def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
     if lo > hi:
         raise ValueError(f"章節範圍無效:{lo} > {hi}(全書共 {total_all} 章)")
     jobs = [(i, book.chapters[i - 1]) for i in range(lo, hi + 1)]
+    for _index, chapter in jobs:
+        adapter.validate_download_chapter(chapter)
     total = len(jobs)
     range_note = f",本次範圍第 {lo}~{hi} 章" if (start or end) else ""
     callback("catalog", 1, 1,
@@ -618,10 +627,12 @@ def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
             fetched += 1
             callback("chapter", completed, total, f"[重試成功] 第{idx}章 {ch.title[:20]}")
         failures = remaining
-        if len(failures) > max_failures:
+        if len(failures) > max_failures or (failures and getattr(adapter, "require_complete_chapters", False)):
             save_progress(cache, status="error", last_error=last_error)
+            threshold_note = ("所有所選章節都必須成功" if getattr(adapter, "require_complete_chapters", False)
+                              else f"上限 {max_failures}")
             raise FetchError(
-                f"重試後仍有 {len(failures)} 章失敗(上限 {max_failures}),中止下載;"
+                f"重試後仍有 {len(failures)} 章失敗({threshold_note}),中止下載;"
                 f"稍後重跑會從快取續傳。最後錯誤:{last_error}")
     if failures:
         preview = "、".join(f"第{idx}章" for idx, _ in failures[:5])

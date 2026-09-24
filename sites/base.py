@@ -60,6 +60,12 @@ class SiteAdapter:
         """回傳過濾廣告後的乾淨內文。title 用於去除內文開頭重複的章節標題。"""
         raise NotImplementedError
 
+    def validate_download_chapter(self, chapter: Chapter) -> None:
+        """Reject a chapter before cache reuse or network access when needed."""
+
+    def validate_response(self, fetcher) -> None:
+        """Reject a response that signals a site access gate, including HTTP 200."""
+
     def chapter_source_url(self, html: str, url: str):
         """章節頁以 JavaScript 載入正文時,回傳真正正文 URL;一般網站回傳 None。"""
         return None
