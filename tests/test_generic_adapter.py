@@ -257,6 +257,28 @@ def test_catalog_page_urls_accepts_unmarked_next_page_only_in_same_catalog_famil
     ]
 
 
+def test_catalog_page_urls_treats_missing_query_page_as_page_one():
+    adapter = GenericAdapter()
+    html = '<a href="?page=2">下一頁</a>'
+    assert adapter.catalog_page_urls(html, "https://example.test/catalog") == [
+        "https://example.test/catalog?page=2"
+    ]
+
+
+def test_catalog_page_urls_accepts_unnumbered_query_page_one_from_later_page():
+    adapter = GenericAdapter()
+    html = '<a href="/catalog">下一頁</a>'
+    assert adapter.catalog_page_urls(html, "https://example.test/catalog?page=2") == [
+        "https://example.test/catalog"
+    ]
+
+
+def test_catalog_page_urls_requires_matching_non_page_query_parameters():
+    adapter = GenericAdapter()
+    html = '<a href="?book=other&page=2">下一頁</a>'
+    assert adapter.catalog_page_urls(html, "https://example.test/catalog?book=123") == []
+
+
 def test_catalog_page_urls_finds_next_link_outside_the_matched_template_container():
     """分頁控制項通常在章節清單容器外面(清單下方的頁碼列),不能只在
     命中模板的 _catalog_container 裡面找「下一頁」,不然常常找不到。

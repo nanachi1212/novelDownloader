@@ -271,11 +271,24 @@ class GenericAdapter(SiteAdapter):
             candidate_query = parse_qsl(candidate.query, keep_blank_values=True)
             current_pages = [(key.lower(), value) for key, value in current_query if key.lower() in page_keys]
             candidate_pages = [(key.lower(), value) for key, value in candidate_query if key.lower() in page_keys]
-            if not current_pages or not candidate_pages:
+            if len(current_pages) > 1 or len(candidate_pages) > 1:
                 return False
             current_base = sorted((key, value) for key, value in current_query if key.lower() not in page_keys)
             candidate_base = sorted((key, value) for key, value in candidate_query if key.lower() not in page_keys)
-            return current_base == candidate_base and current_pages[0][0] == candidate_pages[0][0]
+            if current_base != candidate_base or not (current_pages or candidate_pages):
+                return False
+            current_key, current_value = current_pages[0] if current_pages else (None, "1")
+            candidate_key, candidate_value = candidate_pages[0] if candidate_pages else (None, "1")
+            if not current_pages:
+                current_key = candidate_key
+            if not candidate_pages:
+                candidate_key = current_key
+            return (
+                current_key == candidate_key
+                and current_value.isdigit()
+                and candidate_value.isdigit()
+                and current_value != candidate_value
+            )
 
         for a in soup.find_all("a", href=True):
             text = a.get_text(strip=True) or ""
