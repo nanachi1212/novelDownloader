@@ -29,6 +29,7 @@ FONT_FACE_RE = re.compile(r"@font-face\s*\{([^}]+)\}", re.I | re.S)
 CSS_RULE_RE = re.compile(r"([^{}]+)\{([^{}]*)\}", re.S)
 URL_RE = re.compile(r"url\(\s*(['\"]?)(.*?)\1\s*\)", re.I)
 FAMILY_RE = re.compile(r'''font-family\s*:\s*("(?:\\.|[^"])*"|'(?:\\.|[^'])*'|[^;}]+)''', re.I)
+CSS_COMMENT_RE = re.compile(r"/\*.*?\*/", re.S)
 
 
 class ReaderImportError(ValueError):
@@ -170,7 +171,7 @@ def _extract_css(soup: BeautifulSoup, html_path: Path) -> list[str]:
             blocks.append(stylesheet)
         except FileNotFoundError:
             continue
-    return blocks
+    return [CSS_COMMENT_RE.sub("", block) for block in blocks]
 
 
 def _reader_body(soup: BeautifulSoup):
@@ -278,42 +279,20 @@ def _selector_matches(selector: str, node) -> bool:
     return True
 
 
-def _first_family(match) -> str:
-    value = match.group(1).strip()
+def _font_family_value(value: str) -> str:
+    value = value.strip()
+    if value.lower() in {"inherit", "unset", "initial", "revert", "revert-layer"}:
+        return value.lower()
     if value[:1] in {"'", '"'} and value[-1:] == value[:1]:
         return re.sub(r"\\([\\'\"])", r"\1", value[1:-1]).strip()
     return re.sub(r"\s*!important\s*$", "", value.split(",", 1)[0], flags=re.I).strip().strip("'\"")
 
 
-def _declared_font(node, css_blocks: list[str]) -> str:
-    inline = node.get("style", "")
-    inline_match = FAMILY_RE.search(inline)
-    if inline_match:
-        return _first_family(inline_match)
-    selected = ""
-    for block in css_blocks:
-        for selector_text, declarations in CSS_RULE_RE.findall(block):
-            if selector_text.lstrip().startswith("@"):
-                continue
-            if any(_selector_matches(selector, node) for selector in selector_text.split(",")):
-                family = FAMILY_RE.search(declarations)
-                if family:
-                    selected = _first_family(family)
-    return selected
+def _first_family(match) -> str:
+    return _font_family_value(match.group(1))
 
 
-def _effective_font(node, css_blocks: list[str]) -> str:
-    """Resolve the inherited family actually applied to a reader element."""
-    current = node
-    while isinstance(current, Tag):
-        family = _declared_font(current, css_blocks)
-        if family and family.lower() not in {"inherit", "unset", "initial", "revert", "revert-layer"}:
-            return family
-        current = current.parent
-    return ""
-
-
-FONT_ATTRIBUTE_RE = re.compile(r"(?<![\w-])(font-weight|font-style|font)\s*:\s*([^;]+)", re.I)
+FONT_ATTRIBUTE_RE = re.compile(r"(?<![\w-])(font-family|font-weight|font-style|font)\s*:\s*([^;]+)", re.I)
 FONT_SIZE_RE = re.compile(
     r"^(?:\d+(?:\.\d+)?(?:px|pt|em|rem|%)|xx-small|x-small|small|medium|large|x-large|xx-large)(?:/\S+)?$",
     re.I,
@@ -321,27 +300,30 @@ FONT_SIZE_RE = re.compile(
 
 
 def _font_shorthand_attribute(value: str, name: str) -> str:
-    if value in {"inherit", "unset", "initial", "revert", "revert-layer"}:
-        return value
+    if value.lower() in {"inherit", "unset", "initial", "revert", "revert-layer"}:
+        return value.lower()
     tokens = value.split()
     size_index = next((index for index, token in enumerate(tokens) if FONT_SIZE_RE.fullmatch(token)), None)
     if size_index is None or size_index == len(tokens) - 1:
         raise ReaderImportError("正文使用無法安全解析的 font 簡寫，未建立字型閱讀預覽。")
     style, weight = "normal", "normal"
     for token in tokens[:size_index]:
-        if token in {"italic", "oblique"}:
-            style = token
-        elif token in {"bold", "bolder", "lighter"} or re.fullmatch(r"[1-9]00", token):
-            weight = token
-        elif token not in {"normal", "small-caps"}:
+        lowered = token.lower()
+        if lowered in {"italic", "oblique"}:
+            style = lowered
+        elif lowered in {"bold", "bolder", "lighter"} or re.fullmatch(r"[1-9]00", lowered):
+            weight = lowered
+        elif lowered not in {"normal", "small-caps"}:
             raise ReaderImportError("正文使用無法安全解析的 font 簡寫，未建立字型閱讀預覽。")
+    if name == "font-family":
+        return _font_family_value(" ".join(tokens[size_index + 1:]))
     return weight if name == "font-weight" else style
 
 
 def _font_attribute_declarations(declarations: str, name: str) -> list[tuple[str, str, bool]]:
     found = []
     for match in FONT_ATTRIBUTE_RE.finditer(declarations):
-        property_name, raw_value = match.group(1).lower(), match.group(2).strip().lower()
+        property_name, raw_value = match.group(1).lower(), match.group(2).strip()
         important = bool(re.search(r"!important\s*$", raw_value, re.I))
         value = re.sub(r"\s*!important\s*$", "", raw_value, flags=re.I).strip()
         if property_name in {name, "font"}:
@@ -375,12 +357,14 @@ def _declared_font_attribute(node, rules: list[tuple[list[str], str, str, bool, 
         if specificity is not None:
             candidates.append(((int(important), specificity, order), property_name, value))
     for order, (property_name, value, important) in enumerate(
-            _font_attribute_declarations(node.get("style", ""), name)):
+            _font_attribute_declarations(CSS_COMMENT_RE.sub("", node.get("style", "")), name)):
         candidates.append(((int(important), 1000, len(rules) + order), property_name, value))
     if not candidates:
         return ""
     _priority, property_name, value = max(candidates, key=lambda candidate: candidate[0])
-    return _font_shorthand_attribute(value, name) if property_name == "font" else value
+    if property_name == "font":
+        return _font_shorthand_attribute(value, name)
+    return _font_family_value(value) if name == "font-family" else value.lower()
 
 
 def _effective_font_attribute(node, rules: list[tuple[list[str], str, str, bool, int]], name: str,
@@ -388,8 +372,10 @@ def _effective_font_attribute(node, rules: list[tuple[list[str], str, str, bool,
     current = node
     while isinstance(current, Tag):
         value = _declared_font_attribute(current, rules, name)
+        if value in {"revert", "revert-layer"}:
+            raise ReaderImportError("正文使用無法安全解析的字型重設，未建立預覽。")
         if value and value not in {"inherit", "unset"}:
-            return default if value in {"initial", "revert", "revert-layer"} else value
+            return default if value == "initial" else value
         current = current.parent
     return default
 
@@ -603,9 +589,14 @@ def import_reader_html(source_path, book_id: str, item_id: str, title: str, prev
     if _has_gate_ui(soup, paragraphs):
         raise ReaderImportError("保存頁面含登入、購買或人機驗證要求，未將其當作正文保存。")
     css = _extract_css(soup, source_path)
-    family = _effective_font(content_node, css)
-    paragraph_families = {_effective_font(p, css) for p in content_node.find_all("p")}
-    paragraph_families.discard("")
+    family_rules = _font_attribute_rules(css, "font-family")
+    family = _effective_font_attribute(content_node, family_rules, "font-family", "")
+    paragraph_families = {
+        _effective_font_attribute(p, family_rules, "font-family", "")
+        for p in content_node.find_all("p")
+    }
+    if "" in paragraph_families:
+        raise ReaderImportError("無法確認正文實際使用的字型：章節段落有未確認的正文字型，無法建立預覽。")
     if family and paragraph_families - {family}:
         raise ReaderImportError("章節段落使用不同字型，無法安全套用單一字型預覽。")
     if not family and len(paragraph_families) == 1:

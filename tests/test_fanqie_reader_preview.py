@@ -399,6 +399,44 @@ def test_import_rejects_unresolved_active_font_shorthand(tmp_path):
         import_reader_html(page, "999", "101", "第一章", tmp_path / "preview")
 
 
+def test_import_rejects_paragraph_font_family_reset(tmp_path):
+    page = _saved_reader(tmp_path)
+    source = page.read_text(encoding="utf-8").replace("<p>第二段", '<p style="font-family:initial">第二段')
+    page.write_text(source, encoding="utf-8")
+    with pytest.raises(ReaderImportError, match="未確認的正文字型"):
+        import_reader_html(page, "999", "101", "第一章", tmp_path / "preview")
+
+
+def test_commented_font_declaration_cannot_override_real_weight(tmp_path):
+    page = _saved_reader(tmp_path)
+    assets = tmp_path / "chapter_files"
+    bold = b"wOF2bold-font"
+    (assets / "bold.woff2").write_bytes(bold)
+    (assets / "reader.css").write_text(
+        "@font-face {font-family:MappedFont;font-weight:400;src:url('font.woff2');}"
+        "@font-face {font-family:MappedFont;font-weight:700;src:url('bold.woff2');}"
+        "#reader-content {font-family:MappedFont;font-weight:400;/*font-weight:700;*/}",
+        encoding="utf-8")
+    preview = import_reader_html(page, "999", "101", "第一章", tmp_path / "preview")
+    assert preview.font_sha256 == hashlib.sha256(FONT_BYTES).hexdigest()
+
+
+def test_import_resolves_family_cascade_and_font_shorthand(tmp_path):
+    page = _saved_reader(tmp_path)
+    assets = tmp_path / "chapter_files"
+    other = b"wOF2other-font"
+    (assets / "other.woff2").write_bytes(other)
+    (assets / "reader.css").write_text(
+        "@font-face {font-family:MappedFont;src:url('font.woff2');}"
+        "@font-face {font-family:OtherFont;src:url('other.woff2');}"
+        "#reader-content {font-family:MappedFont;font:400 18px OtherFont;}"
+        "p {font-family:MappedFont;}"
+        "#reader-content p {font-family:OtherFont;}", encoding="utf-8")
+    preview = import_reader_html(page, "999", "101", "第一章", tmp_path / "preview")
+    assert preview.font_family == "OtherFont"
+    assert preview.font_sha256 == hashlib.sha256(other).hexdigest()
+
+
 def test_import_rejects_font_family_that_could_break_generated_style(tmp_path):
     page = _saved_reader(tmp_path, family="MappedFont</style>")
     with pytest.raises(ReaderImportError, match="不安全字元"):
