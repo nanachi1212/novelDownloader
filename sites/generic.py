@@ -147,13 +147,16 @@ class GenericAdapter(SiteAdapter):
                 continue
             if nxt not in candidates:
                 candidates.append(nxt)
-        if len(candidates) == 1:
-            return candidates[0]
+        if not candidates:
+            return None
 
         # 多個「全部章節」連結常見於推薦卡片。只在唯一候選與目前書目有
         # 明確路徑關係時選它，避免跟到推薦書或全站目錄。
         current = urlparse(url)
-        current_params = parse_qsl(current.query, keep_blank_values=True)
+        current_book_params = [
+            (key, value) for key, value in parse_qsl(current.query, keep_blank_values=True)
+            if re.fullmatch(r"(?:book|novel)?_?id", key, flags=re.I)
+        ]
 
         def route_stem(path):
             path = unquote(path).rstrip("/") or "/"
@@ -165,10 +168,17 @@ class GenericAdapter(SiteAdapter):
         for candidate in candidates:
             parsed = urlparse(candidate)
             candidate_params = parse_qsl(parsed.query, keep_blank_values=True)
-            if not all(param in candidate_params for param in current_params):
+            query_related = bool(current_book_params) and all(
+                param in candidate_params for param in current_book_params
+            )
+            if current_book_params and not query_related:
                 continue
             candidate_stem = route_stem(parsed.path)
-            if candidate_stem == current_stem or candidate_stem.startswith(current_stem + "/"):
+            path_related = (
+                candidate_stem == current_stem
+                or candidate_stem.startswith(current_stem + "/")
+            )
+            if path_related or query_related:
                 related.append(candidate)
         return related[0] if len(related) == 1 else None
 
@@ -201,9 +211,20 @@ class GenericAdapter(SiteAdapter):
                 return True
             if getattr(el, "name", None) in ("body", "html"):
                 return False
-            numeric_links = [a for a in el.find_all("a", href=True)
-                             if (a.get_text(strip=True) or "").isdigit()]
-            return len(numeric_links) >= 2
+            numeric_controls = [
+                node for node in el.find_all(["a", "span", "strong", "em", "b"])
+                if (node.get_text(strip=True) or "").isdigit()
+                and (node.name != "a" or node.get("href"))
+            ]
+            top_level_controls = [
+                node for node in numeric_controls
+                if not any(
+                    descendant is candidate
+                    for descendant in node.find_all(["a", "span", "strong", "em", "b"])
+                    for candidate in numeric_controls
+                )
+            ]
+            return len(top_level_controls) >= 2
 
         def _is_pagination_marked(el, max_depth=4):
             # 只往上找幾層(附近的分頁容器),不要一路走到 body/html,

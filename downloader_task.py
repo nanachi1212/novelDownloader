@@ -101,16 +101,43 @@ def order_catalog_pages(pages):
     """依網址裡的頁碼還原目錄分頁順序。
 
     使用者可能貼的是第 2 頁,分頁控制項卻同時連到第 1、3 頁,單純依抓取順序
-    會得到 2、1、3。只有在所有分頁網址除了數字之外完全同樣式時才重排
-    (index_2.html / ?page=2 這類);否則保持抓取順序,不亂猜。
+    會得到 2、1、3。相同數字模板或 `index.html` 搭配 `index_2.html` 這類
+    第 1 頁無後綴的網址才重排;否則保持抓取順序,不亂猜。
     pages: [(url, chapters)];回傳同樣結構、排好序的 list。
     """
     def template(url):
         return re.sub(r"\d+", "#", url)
 
-    if len(pages) < 2 or len({template(url) for url, _ in pages}) != 1:
+    if len(pages) < 2:
         return pages
-    return sorted(pages, key=lambda page: [int(n) for n in re.findall(r"\d+", page[0])])
+
+    if len({template(url) for url, _ in pages}) == 1:
+        return sorted(pages, key=lambda page: [int(n) for n in re.findall(r"\d+", page[0])])
+
+    # 常見的第 1 頁使用 index.html,後續頁才使用 index_2.html、index_3.html。
+    # 將只有末尾分頁數字不同的路徑視為同一組,並把無後綴頁面排在第 1 頁。
+    parsed = [urlparse(url) for url, _ in pages]
+    if len({(p.scheme, p.netloc, p.query, p.fragment) for p in parsed}) != 1:
+        return pages
+    page_paths = []
+    for parsed_url in parsed:
+        match = re.match(r"^(.*?)(?:[_-](\d+))?(\.[^/.]+)?$", parsed_url.path)
+        if not match:
+            return pages
+        base, number, extension = match.groups()
+        if not number and not extension:
+            return pages
+        page_paths.append((base + (extension or ""), int(number) if number else 1, number is None))
+    # canonical path 相同已證明末尾格式一致;還要至少有一個無後綴的頁一
+    # 和一個明確頁碼,避免替普通含數字的不同網址推測順序。
+    if (len({path for path, _number, _unnumbered in page_paths}) != 1
+            or not any(unnumbered for _path, _number, unnumbered in page_paths)
+            or not any(not unnumbered for _path, _number, unnumbered in page_paths)):
+        return pages
+    return [item for _number, item in sorted(
+        ((page_number, item) for (_path, page_number, _unnumbered), item in zip(page_paths, pages)),
+        key=lambda pair: pair[0],
+    )]
 
 
 def merge_split_chapters(chapters):
@@ -227,7 +254,10 @@ def fetch_parsed_chapter(fetcher, adapter, chapter, retries: int, on_retry=None)
                 source_url = adapter.chapter_source_url(html, page_url)
                 if source_url:
                     html = fetcher.get(source_url, referer=page_url, retries=1)
-                parts.append(adapter.parse_chapter(html, title=chapter.title))
+                parsed = adapter.parse_chapter(html, title=chapter.title)
+                if not isinstance(parsed, str) or not parsed.strip():
+                    raise ValueError(f"章節分頁正文為空: {page_url}")
+                parts.append(parsed)
                 return html
 
             def follow_same_chapter_pages(html, page_url):

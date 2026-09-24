@@ -384,6 +384,36 @@ def test_fetch_parsed_chapter_fetches_extra_urls_and_shares_visited_set():
     assert fetcher.calls == ["https://example/ch1", "https://example/ch1_2"]  # 重複的 extra_url 不重抓
 
 
+def test_fetch_parsed_chapter_retries_when_an_extra_page_is_empty(monkeypatch):
+    import downloader_task
+
+    class FakeFetcher:
+        def __init__(self):
+            self.calls = []
+
+        def get(self, url, referer=None, retries=1):
+            self.calls.append(url)
+            if url.endswith("ch1_2") and self.calls.count(url) == 1:
+                return "empty page"
+            return "page 2" if url.endswith("ch1_2") else "page 1"
+
+    class FakeAdapter(SiteAdapter):
+        def chapter_source_url(self, html, url): return None
+        def next_page_url(self, html, url): return None
+
+        def parse_chapter(self, html, title=""):
+            return "" if html == "empty page" else ("P1" if html.endswith("1") else "P2")
+
+    monkeypatch.setattr(downloader_task.time, "sleep", lambda _seconds: None)
+    fetcher = FakeFetcher()
+    chapter = Chapter("第一章", "https://example/ch1", extra_urls=["https://example/ch1_2"])
+    assert fetch_parsed_chapter(fetcher, FakeAdapter(), chapter, 2) == "P1\n\nP2"
+    assert fetcher.calls == [
+        "https://example/ch1", "https://example/ch1_2",
+        "https://example/ch1", "https://example/ch1_2",
+    ]
+
+
 def test_fetch_parsed_chapter_treats_empty_content_as_failure_and_retries():
     class FakeFetcher:
         def __init__(self):
@@ -894,6 +924,17 @@ def test_order_catalog_pages_restores_page_number_order():
 
     pages = [("https://x.test/list_2.html", ["b"]), ("https://x.test/list_1.html", ["a"]),
              ("https://x.test/list_3.html", ["c"])]
+    assert [chapters for _url, chapters in order_catalog_pages(pages)] == [["a"], ["b"], ["c"]]
+
+
+def test_order_catalog_pages_places_unnumbered_page_one_before_numbered_pages():
+    from downloader_task import order_catalog_pages
+
+    pages = [
+        ("https://x.test/book/index_2.html", ["b"]),
+        ("https://x.test/book/index.html", ["a"]),
+        ("https://x.test/book/index_3.html", ["c"]),
+    ]
     assert [chapters for _url, chapters in order_catalog_pages(pages)] == [["a"], ["b"], ["c"]]
 
 

@@ -210,6 +210,23 @@ def test_full_catalog_url_prefers_the_current_books_expand_link_over_recommendat
     )
 
 
+def test_full_catalog_url_rejects_a_lone_recommendation_for_another_book():
+    adapter = GenericAdapter()
+    html = '<a href="/book/456/full.html">全部章節</a>'
+    assert adapter.full_catalog_url(html, "https://example.test/book/123.html") is None
+
+
+def test_full_catalog_url_matches_book_id_query_parameter():
+    adapter = GenericAdapter()
+    html = '''
+    <a href="/reader?book_id=456&all=1">全部章節</a>
+    <a href="/reader?book_id=123&all=1">全部章節</a>
+    '''
+    assert adapter.full_catalog_url(html, "https://example.test/reader?book_id=123") == (
+        "https://example.test/reader?book_id=123&all=1"
+    )
+
+
 def test_catalog_page_urls_next_page_link():
     adapter = GenericAdapter()
     html = '<div id="pager"><a href="/book/1/index_2.html">下一頁</a></div>'
@@ -275,14 +292,12 @@ def test_catalog_page_urls_accepts_numeric_links_in_page_class_container():
     adapter = GenericAdapter()
     html = '''
     <div class="page">
-      <a href="/list_1.html">1</a>
+      <span>1</span>
       <a href="/list_2.html">2</a>
-      <a href="/list_3.html">3</a>
     </div>
     '''
     assert adapter.catalog_page_urls(html, "https://example.test/list_1.html") == [
         "https://example.test/list_2.html",
-        "https://example.test/list_3.html",
     ]
 
 
