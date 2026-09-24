@@ -505,6 +505,9 @@ def _font_resource(css_blocks: list[str], family: str, weight: int, style: str,
     matching_faces = [face for face in faces if _face_matches(face, weight, style)]
     if faces and not matching_faces:
         raise ReaderImportError("找不到與正文實際字重／樣式相符的字型檔，未建立預覽。")
+    if any(re.search(r"(?:^|;)\s*unicode-range\s*:", face, re.I)
+           for face in matching_faces):
+        raise ReaderImportError("正文字型使用 unicode-range 分割字型，無法安全建立單一字型預覽。")
     for face in matching_faces:
         for src in URL_RE.finditer(face):
             uri = src.group(2).strip()
@@ -707,6 +710,18 @@ def import_reader_html(source_path, book_id: str, item_id: str, title: str, prev
         raise ReaderImportError("章節段落使用不同字重／樣式，無法安全套用單一字型預覽。")
     weight = next(iter(paragraph_weights))
     style = next(iter(paragraph_styles))
+    for paragraph in paragraph_nodes:
+        for descendant in paragraph.descendants:
+            if (not isinstance(descendant, Tag) or _is_inert_node(descendant)
+                    or not any(isinstance(child, NavigableString) and str(child).strip()
+                               for child in descendant.children)):
+                continue
+            if (_effective_font_attribute(descendant, family_rules, "font-family", "") != family
+                    or _font_weight(_effective_font_attribute(
+                        descendant, weight_rules, "font-weight", "normal")) != weight
+                    or _font_style(_effective_font_attribute(
+                        descendant, style_rules, "font-style", "normal")) != style):
+                raise ReaderImportError("章節段落內使用不同字型、字重或樣式，無法安全建立單一字型預覽。")
     font_bytes, suffix = _font_resource(css, family, weight, style, source_path)
     digest = hashlib.sha256(font_bytes).hexdigest()
     root = Path(preview_root) / str(book_id) / str(item_id)

@@ -345,6 +345,30 @@ def test_import_rejects_mixed_paragraph_weights(tmp_path):
         import_reader_html(page, "999", "101", "第一章", tmp_path / "preview")
 
 
+@pytest.mark.parametrize("override", [
+    "font-family:OtherMapped", "font-weight:700", "font-style:italic",
+])
+def test_import_rejects_visible_descendant_font_override(tmp_path, override):
+    page = _saved_reader(tmp_path)
+    source = page.read_text(encoding="utf-8").replace(
+        "<p>第二段", f'<p>第二段<span style="{override}">正文</span>')
+    page.write_text(source, encoding="utf-8")
+    with pytest.raises(ReaderImportError, match="段落內使用不同字型"):
+        import_reader_html(page, "999", "101", "第一章", tmp_path / "preview")
+    assert not (tmp_path / "preview").exists()
+
+
+def test_import_rejects_unicode_range_face(tmp_path):
+    page = _saved_reader(tmp_path)
+    css = tmp_path / "chapter_files" / "reader.css"
+    css.write_text(css.read_text(encoding="utf-8").replace(
+        "src: url('font.woff2')", "unicode-range: U+4E00-4E7F; src: url('font.woff2')"
+    ), encoding="utf-8")
+    with pytest.raises(ReaderImportError, match="unicode-range"):
+        import_reader_html(page, "999", "101", "第一章", tmp_path / "preview")
+    assert not (tmp_path / "preview").exists()
+
+
 def test_import_respects_css_specificity_for_reader_weight(tmp_path):
     page = _saved_reader(tmp_path)
     assets = tmp_path / "chapter_files"
