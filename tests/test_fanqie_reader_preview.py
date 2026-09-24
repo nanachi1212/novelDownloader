@@ -796,6 +796,26 @@ def test_alternate_stylesheet_is_not_treated_as_active(tmp_path):
         import_reader_html(page, "999", "101", "第一章", tmp_path / "preview")
 
 
+def test_stylesheet_relation_tokens_are_case_insensitive(tmp_path):
+    page = _saved_reader(tmp_path)
+    source = page.read_text(encoding="utf-8").replace('rel="stylesheet"', 'rel="StyleSheet"')
+    page.write_text(source, encoding="utf-8")
+    preview = import_reader_html(page, "999", "101", "第一章", tmp_path / "preview")
+    assert preview.paragraph_count == 2
+
+
+def test_last_duplicate_font_face_wins(tmp_path):
+    page = _saved_reader(tmp_path)
+    assets = tmp_path / "chapter_files"
+    old_font = b"wOF2" + b"obsolete-synthetic-font"
+    (assets / "old.woff2").write_bytes(old_font)
+    css = assets / "reader.css"
+    css.write_text("@font-face {font-family:'MappedFont';src:url('old.woff2') format('woff2');}\n"
+                   + css.read_text(encoding="utf-8"), encoding="utf-8")
+    preview = import_reader_html(page, "999", "101", "第一章", tmp_path / "preview")
+    assert preview.font_sha256 == hashlib.sha256(FONT_BYTES).hexdigest()
+
+
 def test_local_font_source_fails_closed(tmp_path):
     page = _saved_reader(tmp_path)
     css = tmp_path / "chapter_files" / "reader.css"
