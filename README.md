@@ -49,18 +49,31 @@ python novel_dl.py <網址> --start 100 --end 200
 - novels.com.tw
 - twp.zhys.tw
 - sto9.com
-- fanqienovel.com（公開章節使用完整目錄 API 與 reader 頁；若章節需登入、付費或驗證，會停止下載）
+- fanqienovel.com（Web 可取得完整正文的章節直接下載；Web 只有預覽時，可選用本機 Tomato bridge）
 
-番茄小說可在 GUI 指定結束章，或用 CLI 的 `--end 10` 下載目前目錄明確標示公開的章節。可用範圍依網站即時回應判定，原有「番茄小說：預覽支援」仍可保存原始資料與閱讀頁。
+番茄小說可在 GUI 或 CLI 指定章節範圍（例如 `--start 11 --end 20`），也支援長篇下載。原有「番茄小說：預覽支援」仍可保存目錄、原始資料與閱讀頁。
 
 ### 番茄小說：選用的本機完整正文橋接
 
-番茄 Web 只提供預覽、或目錄未標示公開的章節，預設仍會停止下載並回報原因。若你自行下載了 [TomatoNovelDownloader](https://github.com/zhongbai2333/Tomato-Novel-Downloader) 的 EXE，可按「番茄小說：完整正文橋接」指定它：
+Tomato bridge 是**選用功能**，預設仍使用原本的 Web reader：
 
-- 只有 Web 拿不到完整正文的章節才會交給它；Web 拿得到的章節（例如前段公開章節）照舊走原本流程。
-- 程式在本機 `127.0.0.1` 啟動它的 `--server`（資料放在使用者資料夾的 `fanqie-bridge`），自動選 txt、等任務完成，再把每章正文寫入原本的章節快取，之後的輸出、TXT／EPUB、續傳都與其他章節相同。
-- 如果 18423 埠已有你自己啟動的實例，本程式會改用另一個埠，不會使用也不會結束你的實例；關閉本程式時只結束自己啟動的那一個。
-- 本程式不內含、不複製也不上傳該工具；未設定時行為不變。
+- Web 能取得完整正文的章節，直接下載，不會啟動 bridge。
+- 只有 Web 僅提供預覽的章節，才會交給你指定的 [TomatoNovelDownloader](https://github.com/zhongbai2333/Tomato-Novel-Downloader) EXE 取得完整正文。同一次下載可以混合 Web 與 bridge 章節，輸出的章節順序不變。
+- 取得的正文會寫入 novelDownloader 原本的章節快取，之後的 TXT／EPUB 輸出與 cache／續傳都與其他章節相同。已在快取內的章節重跑時不會再啟動 bridge。
+- **第三方 EXE 不包含在 novelDownloader 的 release 內**，也不會由本程式下載或散布；請自行下載相容版本（已用 `TomatoNovelDownloader-Win64-v2.4.15.exe` 驗證）。
+- 程式在本機 `127.0.0.1` 啟動該 EXE 的 `--server`（資料放在使用者資料夾的 `fanqie-bridge`）。如果預設埠 18423 已有你自己啟動的實例，本程式會改用另一個埠，不會使用也不會結束你的實例；取消下載或關閉本程式時，只會結束自己啟動的那一個。
+- 這只是「完整正文 provider」：本程式不繞過付費、SVIP、登入或平台權限，能否取得完整正文取決於網站當下的回應與你指定的工具。
+
+#### 番茄小說完整正文下載
+
+1. 下載 novelDownloader。
+2. 若只下載 Web 可直接取得的章節，不需額外設定。
+3. 若要下載 Web 僅提供預覽的章節：
+   - 自行下載 TomatoNovelDownloader。
+   - 在 novelDownloader GUI 按「番茄小說：完整正文橋接」，選擇該 EXE。
+4. 正常貼入 fanqienovel.com 書籍網址。
+5. 選擇章節範圍與 TXT／EPUB。
+6. 開始下載。
 
 番茄小說正文會自動解碼目前觀察到的 PUA 字元映射。若網站未來更換 PUA mapping，或不同書籍使用不同映射模式，程式會重新判定；無法可靠解碼時會停止該章下載並回報錯誤，不會把亂碼當成正常正文輸出。
 
