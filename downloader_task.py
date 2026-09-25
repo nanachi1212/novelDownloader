@@ -268,10 +268,10 @@ def fetch_parsed_chapter(fetcher, adapter, chapter, retries: int, on_retry=None)
             seen = {chapter.url}
 
             def fetch_one(page_url, referer=None):
-                html = fetcher.get(page_url, referer=referer, retries=1)
+                html = _fetch_checked(fetcher, adapter, page_url, referer=referer, retries=1)
                 source_url = adapter.chapter_source_url(html, page_url)
                 if source_url:
-                    html = fetcher.get(source_url, referer=page_url, retries=1)
+                    html = _fetch_checked(fetcher, adapter, source_url, referer=page_url, retries=1)
                 parsed = adapter.parse_chapter(html, title=chapter.title)
                 if not isinstance(parsed, str) or not parsed.strip():
                     raise ValueError(f"章節分頁正文為空: {page_url}")
@@ -305,7 +305,37 @@ def fetch_parsed_chapter(fetcher, adapter, chapter, retries: int, on_retry=None)
             return content
         except (FetchError, ValueError) as e:
             last_err = e
+        except Exception as e:
+            if not adapter.retryable_parse_error(e):
+                raise
+            last_err = ValueError(str(e))
     raise last_err
+
+
+def _fetch_checked(fetcher, adapter, url, **kwargs):
+    """Inspect a site's gate headers/status even when Fetcher raises first."""
+    attempts = max(1, int(kwargs.pop("retries", 1)))
+    if not getattr(adapter, "inspect_each_request_attempt", False):
+        try:
+            response = fetcher.get(url, retries=attempts, **kwargs)
+        except FetchError as exc:
+            adapter.validate_response(fetcher)
+            adapter.validate_fetch_error(exc)
+            raise
+        adapter.validate_response(fetcher)
+        return response
+    for attempt in range(attempts):
+        try:
+            response = fetcher.get(url, retries=1, **kwargs)
+        except FetchError as exc:
+            adapter.validate_response(fetcher)
+            adapter.validate_fetch_error(exc)
+            if attempt + 1 == attempts:
+                raise
+            time.sleep(min(1.5 * (attempt + 1), CHAPTER_RETRY_MAX_WAIT))
+            continue
+        adapter.validate_response(fetcher)
+        return response
 
 
 def write_epub(path: Path, title: str, author: str, source: str, chapters, transform=None):
@@ -382,17 +412,20 @@ def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
     """
     callback = callback or (lambda *a: None)
     adapter = get_adapter(url)
+    request_headers = {**adapter.default_request_headers(), **(request_headers or {})}
     fetcher = Fetcher(encoding=adapter.encoding, delay=delay, headers=request_headers, timeout=timeout)
+    request_retries = min(retries, getattr(adapter, "max_request_retries", retries))
 
     callback("catalog", 0, 1, "正在抓取目錄...")
     catalog_url = adapter.catalog_url(url)
     meta_url = adapter.meta_url(url)
     if meta_url:
-        title, author = adapter.parse_meta(fetcher.get(meta_url, retries=retries))
+        meta_html = _fetch_checked(fetcher, adapter, meta_url, retries=request_retries)
+        title, author = adapter.parse_meta(meta_html)
     else:
         title = author = ""
 
-    catalog_html = fetcher.get(catalog_url, retries=retries)
+    catalog_html = _fetch_checked(fetcher, adapter, catalog_url, retries=request_retries)
     full_url = adapter.full_catalog_url(catalog_html, catalog_url)
     collapsed_metadata = None
     if full_url and full_url != catalog_url:
@@ -401,7 +434,7 @@ def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
         callback("catalog", 0, 1, "[目錄] 已展開完整目錄")
         catalog_url = full_url
         fetcher.polite_sleep()
-        catalog_html = fetcher.get(catalog_url, retries=retries)
+        catalog_html = _fetch_checked(fetcher, adapter, catalog_url, retries=request_retries)
 
     # 用 parse_catalog_page 而非 parse_catalog:展開完整目錄後,GenericAdapter
     # 需要知道實際抓到的是哪個網址,才能正確解析頁面上的相對連結
@@ -435,7 +468,7 @@ def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
         visited_pages.add(next_url)
         pages_fetched += 1
         fetcher.polite_sleep()
-        next_html = fetcher.get(next_url, retries=retries)
+        next_html = _fetch_checked(fetcher, adapter, next_url, retries=request_retries)
         extra = adapter.parse_catalog_page(next_html, next_url)
         new_chapters = [c for c in extra.chapters if c.url not in seen_chapter_urls]
         if new_chapters:
@@ -491,6 +524,8 @@ def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
     if lo > hi:
         raise ValueError(f"章節範圍無效:{lo} > {hi}(全書共 {total_all} 章)")
     jobs = [(i, book.chapters[i - 1]) for i in range(lo, hi + 1)]
+    for _index, chapter in jobs:
+        adapter.validate_download_chapter(chapter)
     total = len(jobs)
     range_note = f",本次範圍第 {lo}~{hi} 章" if (start or end) else ""
     callback("catalog", 1, 1,
@@ -501,6 +536,7 @@ def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
     cache = cache_root() / (adapter.book_id(url) + ("-merged" if merged else ""))
     cache.mkdir(parents=True, exist_ok=True)
     prior_progress = read_json(cache / "progress.json", {})
+    adapter.restore_cache_state(cache)
     if (isinstance(prior_progress, dict) and prior_progress.get("total_chapters")
             and prior_progress["total_chapters"] != total_all and any(cache.glob("*.txt"))):
         callback("catalog", 0, 1,
@@ -536,7 +572,7 @@ def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
     def fetch_job(n, idx, ch):
         if cancel_check and cancel_check():
             raise Cancelled("使用者中止,已下載的章節保留在快取,重跑會續傳")
-        cache_file = cache / f"{idx:04d}.txt"  # 用全書絕對章號命名,範圍下載也能共用快取
+        cache_file = cache / adapter.chapter_cache_filename(ch, idx)
         content = ""
         if cache_file.exists():
             try:
@@ -560,6 +596,7 @@ def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
                 raise ValueError(
                     f"[自動偵測] 第一章只解析出 {len(content)} 字,通用模式可能抓錯正文區塊,"
                     "已中止下載;請回報網址讓我寫專屬 adapter")
+            adapter.save_cache_state(cache)
             atomic_write_text(cache_file, content)
             active_fetcher.polite_sleep()
             downloaded = True
@@ -605,23 +642,26 @@ def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
         for n, idx, ch in failures:
             if cancel_check and cancel_check():
                 raise Cancelled("使用者中止,已下載的章節保留在快取,重跑會續傳")
-            cache_file = cache / f"{idx:04d}.txt"
+            cache_file = cache / adapter.chapter_cache_filename(ch, idx)
             try:
                 content = fetch_parsed_chapter(fetcher, adapter, ch, retries)
             except (FetchError, ValueError) as exc:
                 last_error = str(exc)
                 remaining.append((idx, ch.title))
                 continue
+            adapter.save_cache_state(cache)
             atomic_write_text(cache_file, content)
             fetcher.polite_sleep()
             results[n - 1] = (ch.title, cache_file)
             fetched += 1
             callback("chapter", completed, total, f"[重試成功] 第{idx}章 {ch.title[:20]}")
         failures = remaining
-        if len(failures) > max_failures:
+        if len(failures) > max_failures or (failures and getattr(adapter, "require_complete_chapters", False)):
             save_progress(cache, status="error", last_error=last_error)
+            threshold_note = ("所有所選章節都必須成功" if getattr(adapter, "require_complete_chapters", False)
+                              else f"上限 {max_failures}")
             raise FetchError(
-                f"重試後仍有 {len(failures)} 章失敗(上限 {max_failures}),中止下載;"
+                f"重試後仍有 {len(failures)} 章失敗({threshold_note}),中止下載;"
                 f"稍後重跑會從快取續傳。最後錯誤:{last_error}")
     if failures:
         preview = "、".join(f"第{idx}章" for idx, _ in failures[:5])

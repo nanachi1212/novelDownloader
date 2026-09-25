@@ -224,9 +224,10 @@ def test_raw_preview_reads_source_response_not_cache_envelope(tmp_path):
     assert load_cached_source_response(path, "999", "101") == source
 
 
-def test_preview_adapter_cannot_export_unrestored_text_and_is_registered():
+def test_fanqie_adapter_is_registered_and_rejects_non_reader_inputs():
     adapter = get_adapter("https://fanqienovel.com/page/123456")
     assert isinstance(adapter, FanqieAdapter)
+    assert not getattr(adapter, "preview_only", False)
     with pytest.raises(FanqieError):
         adapter.parse_catalog("<html></html>")
     with pytest.raises(FanqieError):

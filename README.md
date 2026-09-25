@@ -49,6 +49,9 @@ python novel_dl.py <網址> --start 100 --end 200
 - novels.com.tw
 - twp.zhys.tw
 - sto9.com
+- fanqienovel.com（公開章節使用完整目錄 API 與 reader 頁；若章節需登入、付費或驗證，會停止下載）
+
+番茄小說可在 GUI 指定結束章，或用 CLI 的 `--end 10` 下載目前目錄明確標示公開的章節。可用範圍依網站即時回應判定，原有「番茄小說：預覽支援」仍可保存原始資料與閱讀頁。
 
 其他網站會使用通用 adapter 嘗試解析。外部 `.py` adapter 能執行任意程式碼，因此匯入或下載後預設停用；檢查內容後才手動啟用。
 

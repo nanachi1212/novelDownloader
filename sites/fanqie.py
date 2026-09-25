@@ -1,4 +1,5 @@
-"""番茄小說目錄與原始預覽資料 adapter。"""
+"""番茄小說公開章節與獨立原始預覽資料 adapter。"""
+import hashlib
 import json
 import os
 import re
@@ -7,8 +8,12 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 
+from bs4 import BeautifulSoup
+
+from fanqie_decoder import DecodeFailed, decode_chapter
 from fetcher import FetchError, Fetcher
-from .base import BookInfo, SiteAdapter
+from state_io import read_json, write_json
+from .base import BookInfo, Chapter, SiteAdapter
 
 BOOK_ID_RE = re.compile(r"(?:/page/|bookId=)(\d+)", re.I)
 ITEM_ID_RE = re.compile(r"^\d+$")
@@ -20,6 +25,9 @@ BOOK_URL = "https://fanqienovel.com/page/{book_id}"
 READER_URL = "https://fanqienovel.com/reader/{item_id}"
 DIRECTORY_URL = "https://fanqienovel.com/api/reader/directory/detail?bookId={book_id}"
 FULL_URL = "https://fanqienovel.com/api/reader/full?itemId={item_id}"
+INITIAL_STATE_RE = re.compile(r"window\.__INITIAL_STATE__\s*=\s*")
+SCRIPT_END_RE = re.compile(r"</script\s*>", re.I)
+MAX_READER_HTML = 8 * 1024 * 1024
 
 
 class FanqieError(RuntimeError):
@@ -44,6 +52,8 @@ class FanqieChapter:
         paid_keys = ("needPay", "isPaidPublication", "isPaidStory", "isPay", "isVip")
         if any(_truthy(self.statuses.get(key)) for key in paid_keys):
             return "restricted"
+        if _response_access_status(self.statuses):
+            return "unknown_locked"
         for key, value in self.statuses.items():
             lowered = str(key).lower()
             if _truthy(value) and any(marker in lowered for marker in ("pay", "vip", "member", "purchase")):
@@ -84,9 +94,9 @@ def _response_access_status(data):
             )
             if _truthy(value) and gate_key:
                 return "存取狀態未明"
-        status = str(source.get("accessStatus") or source.get("access_status") or "").lower()
-        if any(word in status for word in ("pay", "lock", "restrict", "login", "verify", "auth", "denied", "forbidden")):
-            return "存取狀態未明"
+        for key in ("accessStatus", "access_status"):
+            if key in source and str(source[key]).strip().lower() not in {"public", "free", "unlocked"}:
+                return "存取狀態未明"
     return ""
 
 
@@ -117,6 +127,66 @@ def _json_object(raw, label):
         message = value.get("message") or value.get("msg") or "站方回應失敗"
         raise FanqieError(f"{label}失敗：{message}（code={value.get('code')!r}）")
     return value
+
+
+def _replace_js_undefined(source):
+    """Normalize a bare JS undefined without changing quoted story text."""
+    result = []
+    quoted = escaped = False
+    previous = ""
+    index = 0
+    while index < len(source):
+        char = source[index]
+        if quoted:
+            result.append(char)
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                quoted = False
+        elif char == '"':
+            quoted = True
+            result.append(char)
+        elif (source.startswith("undefined", index) and previous in {":", ",", "["}
+              and (index + 9 == len(source) or source[index + 9] in ",}] \t\r\n")):
+            result.append("null")
+            previous = "l"
+            index += 9
+            continue
+        else:
+            result.append(char)
+            if not char.isspace():
+                previous = char
+        index += 1
+    return "".join(result)
+
+
+def _initial_state(html):
+    if not isinstance(html, str) or not html or len(html.encode("utf-8")) > MAX_READER_HTML:
+        raise FanqieError("番茄頁面為空或過大，未接受正文。")
+    match = INITIAL_STATE_RE.search(html)
+    if not match:
+        return None
+    end = SCRIPT_END_RE.search(html, match.end())
+    if not end:
+        raise FanqieError("番茄頁面的 INITIAL_STATE 不完整。")
+    try:
+        state, _ = json.JSONDecoder().raw_decode(_replace_js_undefined(html[match.end():end.start()]))
+    except (ValueError, TypeError) as exc:
+        raise FanqieError("番茄頁面的 INITIAL_STATE 格式錯誤。") from exc
+    if not isinstance(state, dict):
+        raise FanqieError("番茄頁面的 INITIAL_STATE 不是資料物件。")
+    return state
+
+
+def _chapter_paragraphs(content):
+    if not isinstance(content, str) or not content.strip():
+        return []
+    soup = BeautifulSoup(content, "html.parser")
+    for line_break in soup.find_all("br"):
+        line_break.replace_with("\n")
+    return [text for node in soup.find_all("p") if (text := node.get_text("", strip=False).strip())]
 
 
 def parse_directory_response(raw):
@@ -157,17 +227,94 @@ def parse_directory_response(raw):
 
 
 def create_fetcher(delay=2.0, timeout=20):
-    return Fetcher(delay=delay, timeout=timeout, headers={
-        "User-Agent": MOBILE_UA,
-        "Accept": "application/json, text/plain, */*",
-        "ismobile": "1",
-    })
+    return Fetcher(delay=delay, timeout=timeout,
+                   headers=FanqieAdapter().default_request_headers())
 
 
 class FanqieAdapter(SiteAdapter):
     domains = ["fanqienovel.com", "www.fanqienovel.com"]
     max_chapter_workers = 1
-    preview_only = True
+    inspect_each_request_attempt = True
+    require_complete_chapters = True
+
+    def default_request_headers(self):
+        return {"User-Agent": MOBILE_UA,
+                "Accept": "application/json, text/plain, */*",
+                "ismobile": "1"}
+
+    def book_id(self, url):
+        return parse_book_id(url)
+
+    def catalog_url(self, url):
+        self._book_id = parse_book_id(url)
+        self._book_title = ""
+        self._book_author = ""
+        self._chapter_access = {}
+        self._decoder_mode = None
+        self._expected_item_id = None
+        return DIRECTORY_URL.format(book_id=self._book_id)
+
+    def meta_url(self, url):
+        self._book_id = parse_book_id(url)
+        return BOOK_URL.format(book_id=self._book_id)
+
+    def validate_response(self, fetcher):
+        if _verification_required(fetcher):
+            raise AccessVerificationRequired("番茄網站要求登入或人機驗證，已停止公開章節下載。")
+
+    def validate_fetch_error(self, error):
+        if "Cloudflare 挑戰" in str(error) or "人機驗證" in str(error):
+            raise AccessVerificationRequired("番茄網站要求人機驗證，已停止公開章節下載。") from error
+
+    def parse_meta(self, html):
+        state = _initial_state(html)
+        page = state.get("page") if state else None
+        if not isinstance(page, dict) or str(page.get("bookId")) != getattr(self, "_book_id", None):
+            raise FanqieError("番茄書籍頁缺少相符的書籍資料；沒有使用不明頁面。")
+        title, author = page.get("bookName"), page.get("author")
+        if not isinstance(title, str) or not title.strip() or not isinstance(author, str):
+            raise FanqieError("番茄書籍頁缺少書名或作者。")
+        self._book_title, self._book_author = title.strip(), author.strip()
+        return self._book_title, self._book_author
+
+    def validate_download_chapter(self, chapter):
+        for url in [chapter.url, *chapter.extra_urls]:
+            match = re.fullmatch(r"https://fanqienovel\.com/reader/(\d+)", url)
+            if not match or getattr(self, "_chapter_access", {}).get(match.group(1)) != "public_candidate":
+                raise AccessVerificationRequired("所選番茄章節的目錄存取旗標不是明確公開，已停止下載。")
+
+    def chapter_cache_filename(self, chapter, index):
+        item_ids = []
+        for url in [chapter.url, *chapter.extra_urls]:
+            match = re.fullmatch(r"https://fanqienovel\.com/reader/(\d+)", url)
+            if not match:
+                raise FanqieError("番茄快取章節網址沒有有效 itemId。")
+            item_ids.append(match.group(1))
+        if len(item_ids) == 1:
+            return f"{item_ids[0]}.txt"
+        digest = hashlib.sha256(",".join(item_ids).encode("ascii")).hexdigest()[:16]
+        return f"{item_ids[0]}-{digest}.txt"
+
+    def restore_cache_state(self, cache):
+        state = read_json(Path(cache) / "fanqie_decoder.json", {})
+        if (isinstance(state, dict) and state.get("book_id") == getattr(self, "_book_id", None)
+                and type(state.get("mode")) is int and state["mode"] in (0, 1)):
+            self._decoder_mode = state["mode"]
+
+    def save_cache_state(self, cache):
+        if self._decoder_mode in (0, 1):
+            write_json(Path(cache) / "fanqie_decoder.json",
+                       {"book_id": self._book_id, "mode": self._decoder_mode})
+
+    def retryable_parse_error(self, error):
+        return isinstance(error, (FanqieError, DecodeFailed)) and not isinstance(error, AccessVerificationRequired)
+
+    def chapter_source_url(self, html, url):
+        match = re.fullmatch(r"https://fanqienovel\.com/reader/(\d+)", url)
+        if not match:
+            raise FanqieError("番茄章節網址不是已核對的 reader 頁。")
+        self._expected_item_id = match.group(1)
+        return None
 
     def fetch_directory(self, url, fetcher=None):
         book_id = parse_book_id(url)
@@ -228,10 +375,61 @@ class FanqieAdapter(SiteAdapter):
         }, ensure_ascii=False)
 
     def parse_catalog(self, html):
-        raise FanqieError("番茄小說目前只支援目錄／原始資料 Preview，不能加入 TXT／EPUB 下載隊列。")
+        book_id = getattr(self, "_book_id", None)
+        if not book_id:
+            raise FanqieError("番茄目錄缺少來源 bookId。")
+        source = parse_directory_response(html)
+        self._chapter_access = {item.item_id: item.access for item in source}
+        return BookInfo(
+            getattr(self, "_book_title", "") or f"番茄小說_{book_id}",
+            getattr(self, "_book_author", ""),
+            [Chapter(item.title, READER_URL.format(item_id=item.item_id)) for item in source],
+        )
 
     def parse_chapter(self, html, title=""):
-        raise FanqieError("番茄原始字元尚未還原，禁止經由 TXT／EPUB 匯出流程輸出。")
+        state = _initial_state(html)
+        reader = state.get("reader") if state else None
+        chapter_data = reader.get("chapterData") if isinstance(reader, dict) else None
+        if not isinstance(chapter_data, dict):
+            raise AccessVerificationRequired("番茄 reader 頁缺少章節資料，可能是驗證或錯誤頁；未保存正文。")
+        item_id = str(chapter_data.get("itemId") or "")
+        expected = getattr(self, "_expected_item_id", None)
+        if not ITEM_ID_RE.fullmatch(item_id) or (expected and item_id != expected):
+            raise FanqieError("番茄 reader 正文 itemId 與所選章節不符。")
+        book_id = str(chapter_data.get("bookId") or "")
+        if not ITEM_ID_RE.fullmatch(book_id) or (getattr(self, "_book_id", None) and book_id != self._book_id):
+            raise FanqieError("番茄 reader 正文 bookId 與所選書籍不符。")
+        access = FanqieChapter(item_id, title, "", 0, chapter_data).access
+        if access != "public_candidate" or _response_access_status(chapter_data):
+            raise AccessVerificationRequired("番茄 reader 章節未標示明確公開，未保存正文。")
+        if getattr(self, "_chapter_access", {}).get(item_id, "public_candidate") != "public_candidate":
+            raise AccessVerificationRequired("番茄目錄與 reader 的公開狀態不一致，未保存正文。")
+        paragraphs = _chapter_paragraphs(chapter_data.get("content"))
+        if not paragraphs:
+            soup = BeautifulSoup(html, "html.parser")
+            node = soup.select_one(".muye-reader-content")
+            paragraphs = _chapter_paragraphs(str(node)) if node else []
+        if not paragraphs:
+            raise FanqieError("番茄 reader 頁沒有完整可辨識的段落正文，未保存錯誤頁。")
+        body = "\n\n".join(paragraphs)
+        decoded = decode_chapter(body, getattr(self, "_decoder_mode", None))
+        decoded_paragraphs = decoded.text.split("\n\n")
+        if title and decoded_paragraphs[0].strip() == title.strip():
+            decoded_paragraphs.pop(0)
+        body = "\n\n".join(decoded_paragraphs)
+        if not body.strip():
+            raise FanqieError("番茄 reader 頁只有章名，缺少正文。")
+        expected_words = chapter_data.get("chapterWordNumber")
+        if isinstance(expected_words, str) and re.fullmatch(r"[0-9]+", expected_words):
+            expected_words = int(expected_words)
+        elif expected_words is not None and type(expected_words) is not int:
+            raise FanqieError("番茄 reader 章節字數格式無法確認，未保存正文。")
+        if (type(expected_words) is int and expected_words > 0
+                and len(body.replace("\n", "")) < expected_words * 0.7):
+            raise FanqieError("番茄 reader 正文短於章節字數，可能是截斷內容；未保存。")
+        if decoded.mode is not None:
+            self._decoder_mode = decoded.mode
+        return body
 
 
 def chapter_cache_path(root, book_id, item_id):

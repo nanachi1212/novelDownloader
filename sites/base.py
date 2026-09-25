@@ -21,6 +21,10 @@ class SiteAdapter:
     encoding: str = "utf-8"
     max_chapter_workers: int = 8  # 受 Session／反爬限制的網站可降為 1
 
+    def default_request_headers(self) -> dict[str, str]:
+        """Site-specific public request headers; callers may override them."""
+        return {}
+
     def catalog_url(self, url: str) -> str:
         """把使用者貼的網址(簡介頁/目錄頁)正規化成目錄頁網址。"""
         return url
@@ -59,6 +63,29 @@ class SiteAdapter:
     def parse_chapter(self, html: str, title: str = "") -> str:
         """回傳過濾廣告後的乾淨內文。title 用於去除內文開頭重複的章節標題。"""
         raise NotImplementedError
+
+    def validate_download_chapter(self, chapter: Chapter) -> None:
+        """Reject a chapter before cache reuse or network access when needed."""
+
+    def validate_response(self, fetcher) -> None:
+        """Reject a response that signals a site access gate, including HTTP 200."""
+
+    def validate_fetch_error(self, error: Exception) -> None:
+        """Reject a site-specific access gate reported by the fetch layer."""
+
+    def chapter_cache_filename(self, chapter: Chapter, index: int) -> str:
+        """Name a chapter cache entry; sites with stable IDs may override it."""
+        return f"{index:04d}.txt"
+
+    def restore_cache_state(self, cache) -> None:
+        """Restore optional adapter state before cached chapters are reused."""
+
+    def save_cache_state(self, cache) -> None:
+        """Persist optional adapter state before a parsed chapter is cached."""
+
+    def retryable_parse_error(self, error: Exception) -> bool:
+        """Identify site parser errors eligible for the chapter retry loop."""
+        return False
 
     def chapter_source_url(self, html: str, url: str):
         """章節頁以 JavaScript 載入正文時,回傳真正正文 URL;一般網站回傳 None。"""

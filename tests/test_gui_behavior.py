@@ -7,6 +7,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PyQt6.QtWidgets import QApplication, QMessageBox, QSystemTrayIcon
 
 from fanqie_preview import FanqiePreviewDialog
+import fanqie_preview
 import main_window
 from sites.fanqie import FanqieChapter
 from state_io import read_json
@@ -126,17 +127,17 @@ def test_adding_existing_stopped_url_resumes_it(monkeypatch, tmp_path):
         window.close()
 
 
-def test_fanqie_preview_is_exposed_and_not_queued_for_txt(monkeypatch, tmp_path):
+def test_fanqie_public_chapters_can_be_queued_while_preview_remains_available(monkeypatch, tmp_path):
     app, window = make_window(monkeypatch, tmp_path)
-    messages = []
-    monkeypatch.setattr(QMessageBox, "information", lambda *args: messages.append(args[2]))
     try:
         assert window.fanqie_preview_btn.text() == "番茄小說：預覽支援"
         window.url_input.setText("https://fanqienovel.com/page/123456789")
+        window.end_input.setText("3")
         window.add_btn.click()
         app.processEvents()
-        assert window.jobs == []
-        assert messages and "不能加入 TXT／EPUB" in messages[0]
+        assert len(window.jobs) == 1
+        assert window.jobs[0]["end"] == 3
+        assert window.jobs[0]["url"] == "https://fanqienovel.com/page/123456789"
     finally:
         window.close()
 
@@ -163,7 +164,7 @@ def test_fanqie_preview_dialog_directory_and_selection_controls(monkeypatch, tmp
         assert dialog.tree.topLevelItem(0).text(3).startswith("公開")
         assert not dialog.tree.topLevelItem(1).isDisabled()
         assert dialog.raw_state.text() == "原始資料：尚未保存"
-        assert dialog.reader_state.text() == "字型閱讀預覽：不可用"
+        assert dialog.reader_state.text() == "字型閱讀預覽：不可用（尚未匯入）"
         assert dialog.text_state.text() == "文字尚未還原"
         dialog.tree.setCurrentItem(dialog.tree.topLevelItem(0))
         app.processEvents()
@@ -201,6 +202,30 @@ def test_reader_html_import_cancel_keeps_chapter_and_cache_unchanged(monkeypatch
         assert not (dialog.cache_root / "123456789" / "100").exists()
         assert dialog.import_reader_button.isEnabled()
         assert not dialog.reading_preview_button.isEnabled()
+    finally:
+        dialog.close()
+
+
+def test_fanqie_selection_validates_font_once(monkeypatch, tmp_path):
+    monkeypatch.setenv("NOVELDOWNLOADER_DATA_DIR", str(tmp_path / "profile"))
+    app = QApplication.instance() or QApplication([])
+    dialog = FanqiePreviewDialog()
+    try:
+        dialog.book_id = "123456789"
+        dialog.chapters = [FanqieChapter("100", "第一章", "第一卷", 1, {
+            "needPay": 0, "isPaidPublication": False,
+            "isPaidStory": False, "isChapterLock": False,
+        })]
+        dialog._populate_directory()
+        dialog.tree.setCurrentItem(dialog.tree.topLevelItem(0))
+        app.processEvents()
+        calls = []
+        monkeypatch.setattr(fanqie_preview, "reading_preview_status",
+                            lambda *args: (calls.append(args) or (True, "ok")))
+        dialog.update_buttons()
+        assert len(calls) == 1
+        assert dialog.reading_preview_button.isEnabled()
+        assert not dialog.import_reader_button.isEnabled()
     finally:
         dialog.close()
 

@@ -13,7 +13,7 @@ from PyQt6.QtWidgets import (
 
 from app_paths import prepare_app_data
 from fetcher import FetchError
-from fanqie_reader_preview import ReaderImportError, import_reader_html
+from fanqie_reader_preview import ReaderImportError, import_reader_html, reading_preview_status
 from sites.fanqie import (
     AccessVerificationRequired, FanqieAdapter, FanqieError,
     chapter_cache_path, create_fetcher, open_reader_url, parse_book_id, save_raw_chapters,
@@ -147,7 +147,10 @@ class FanqiePreviewDialog(QDialog):
         controls.addWidget(self.preview_button)
         self.import_reader_button = QPushButton("匯入已保存閱讀頁")
         self.import_reader_button.setObjectName("fanqieImportReaderButton")
-        self.import_reader_button.setToolTip("先由使用者在瀏覽器另存網頁完整，並保留同名 _files 資源資料夾。")
+        self.import_reader_button.setToolTip(
+            "先在瀏覽器另存完整網頁並保留同名 _files 資料夾。"
+            "若瀏覽器漏存字型，需將頁面 @font-face 指向的同名字型檔手動放入該資料夾。"
+        )
         self.import_reader_button.clicked.connect(self.import_reader_page)
         controls.addWidget(self.import_reader_button)
         self.reading_preview_button = QPushButton("開啟字型閱讀預覽")
@@ -185,15 +188,8 @@ class FanqiePreviewDialog(QDialog):
     def _has_reading_preview(self, chapter):
         if not self.book_id or not chapter:
             return False
-        manifest_path, preview_path = self._reader_paths(chapter)
-        try:
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            return (preview_path.is_file() and manifest.get("book_id") == self.book_id
-                    and manifest.get("item_id") == chapter.item_id
-                    and manifest.get("text_restored") is False
-                    and bool(manifest.get("font_sha256")))
-        except (OSError, ValueError):
-            return False
+        valid, _reason = reading_preview_status(self.cache_root, self.book_id, chapter.item_id)
+        return valid
 
     def import_reader_page(self):
         chapter = self._selected_chapter()
@@ -203,18 +199,24 @@ class FanqiePreviewDialog(QDialog):
         source = self._choose_reader_source()
         if not source:
             return
+        chapter_index = self.chapters.index(chapter)
+        next_item_id = (self.chapters[chapter_index + 1].item_id
+                        if chapter_index + 1 < len(self.chapters) else None)
         try:
             result = import_reader_html(source, self.book_id, chapter.item_id,
-                                        chapter.title, self.cache_root)
+                                        chapter.title, self.cache_root, next_item_id=next_item_id)
         except (ReaderImportError, OSError, ValueError) as exc:
             self.status.setText(f"匯入失敗，既有保存資料未更動；字型閱讀預覽不可用：{exc}")
             QMessageBox.warning(self, "無法建立字型閱讀預覽", str(exc))
             self.update_buttons()
             return
-        self.status.setText(
+        message = (
             f"閱讀預覽頁已建立（{result.font_family}，{result.paragraph_count} 段）；"
             "請在瀏覽器確認頁首字型載入狀態。"
         )
+        if result.previous_path:
+            message += f" 舊的無效預覽已保留在：{result.previous_path}"
+        self.status.setText(message)
         self.update_buttons()
 
     def _choose_reader_source(self):
@@ -368,16 +370,20 @@ class FanqiePreviewDialog(QDialog):
         )
         if not can_read and manifest_path and (manifest_path.parent / "source.html").is_file():
             self.raw_state.setText("原始資料已保存（瀏覽器 HTML）")
+        reader_valid, reader_reason = (
+            reading_preview_status(self.cache_root, self.book_id, chapter.item_id)
+            if chapter and self.book_id else (False, "尚未匯入")
+        )
         self.reader_state.setText(
             "字型閱讀預覽：已建立，開啟後確認字型是否載入"
-            if self._has_reading_preview(chapter) else "字型閱讀預覽：不可用"
+            if reader_valid else f"字型閱讀預覽：不可用（{reader_reason}）"
         )
         self.text_state.setText("文字尚未還原")
         self.save_selected_button.setEnabled(bool(chapter and chapter.access == "public_candidate" and not cache_exists and not (self.worker and self.worker.isRunning())))
         self.preview_button.setEnabled(can_read)
         self.import_reader_button.setEnabled(bool(chapter and chapter.access == "public_candidate"
-                                                  and not self._has_reading_preview(chapter)))
-        self.reading_preview_button.setEnabled(self._has_reading_preview(chapter))
+                                                  and not reader_valid))
+        self.reading_preview_button.setEnabled(reader_valid)
         self.original_button.setEnabled(chapter is not None)
         self.save_first_button.setEnabled(bool(self.chapters) and not (self.worker and self.worker.isRunning()))
 
