@@ -21,7 +21,7 @@ import os
 import sys
 import traceback
 from pathlib import Path
-from PyQt6.QtCore import QTimer
+from PyQt6.QtCore import QThread, QTimer
 from PyQt6.QtWidgets import QApplication
 
 
@@ -100,7 +100,17 @@ def check_application():
         app.exit(exit_code)
 
 
-QTimer.singleShot(0, check_application)
+def start_when_event_loop_runs():
+    # gui_launcher.main() drains events with app.processEvents() before app.exec();
+    # exiting from that drain leaves the real loop running forever. loopLevel() is 0
+    # until app.exec() starts, so wait for it instead of guessing a delay.
+    if QThread.currentThread().loopLevel() == 0:
+        QTimer.singleShot(50, start_when_event_loop_runs)
+        return
+    check_application()
+
+
+QTimer.singleShot(0, start_when_event_loop_runs)
 '''
 
 
