@@ -120,10 +120,23 @@ def txt_book_id(text):
     return match.group(1) if match else None
 
 
+def _is_chapter_heading(lines, index):
+    """A heading follows the header rule or the previous chapter's rule, optionally
+    with a volume heading in between; a story line that repeats a title does not."""
+    j = index - 1
+    while j >= 0 and not lines[j].strip():
+        j -= 1
+    if j >= 0 and VOLUME_TITLE_RE.match(lines[j].strip()):
+        j -= 1
+        while j >= 0 and not lines[j].strip():
+            j -= 1
+    return j >= 0 and bool(TXT_SEPARATOR_RE.match(lines[j]) or CHAPTER_RULE_RE.match(lines[j].strip()))
+
+
 def parse_tomato_txt(text, chapters):
     """Split a Tomato TXT export into per-chapter bodies, failing closed.
 
-    Every requested chapter title must appear, in order, as its own line.
+    Every requested chapter title must appear, in order, as a chapter heading.
     """
     lines = text.splitlines()
     sep = next((i for i, line in enumerate(lines) if TXT_SEPARATOR_RE.match(line)), None)
@@ -132,7 +145,8 @@ def parse_tomato_txt(text, chapters):
     starts, pos = [], sep + 1
     for chapter in chapters:
         wanted = _title_key(chapter.title)
-        found = next((i for i in range(pos, len(lines)) if _title_key(lines[i]) == wanted), None)
+        found = next((i for i in range(pos, len(lines))
+                      if _title_key(lines[i]) == wanted and _is_chapter_heading(lines, i)), None)
         if found is None:
             raise ProviderError(f"Tomato 輸出找不到章節標題「{chapter.title}」，未保存。")
         starts.append(found)
@@ -396,38 +410,42 @@ class TomatoBridgeProvider(FullTextProvider):
         if progress:
             progress(f"[Tomato] 已建立任務，第 {start}~{end} 章（{len(run)} 章）")
         deadline = time.monotonic() + 600 + 60 * len(run)
-        format_sent = False
-        while True:
-            if cancel_check and cancel_check():
-                self._cancel_job(job_id)
-                raise ProviderCancelled("使用者中止，已取消 Tomato 任務。")
-            reply = self._request("GET", f"/api/jobs?id={job_id}")
-            items = reply.get("items") if isinstance(reply, dict) else None
-            item = next((entry for entry in items or []
-                         if isinstance(entry, dict) and entry.get("id") == job_id), None)
-            if item is None:
-                raise ProviderError("Tomato 任務清單找不到剛建立的任務。")
-            state = str(item.get("state") or "").lower()
-            options = item.get("format_options")
-            if options and not format_sent:
-                values = [entry.get("value") for entry in options if isinstance(entry, dict)]
-                if "txt" not in values:
-                    self._cancel_job(job_id)
-                    raise ProviderError("Tomato 提供的輸出格式選項沒有 txt。")
-                self._request("POST", f"/api/jobs/{job_id}/format", {"value": "txt"})
-                format_sent = True
-            if state == "done":
-                break
-            if state in FAILED_STATES:
-                raise ProviderError(f"Tomato 任務失敗（{state}）：{item.get('message') or '未提供原因'}")
-            if time.monotonic() > deadline:
-                self._cancel_job(job_id)
-                raise ProviderError("等待 Tomato 任務完成逾時，已取消。")
-            if progress and isinstance(item.get("progress"), dict):
-                saved, total = item["progress"].get("saved_chapters"), item["progress"].get("chapter_total")
-                if saved is not None and total:
-                    progress(f"[Tomato] 第 {start}~{end} 章：{saved}/{total}")
-            time.sleep(self.poll_interval)
+        format_sent = finished = False
+        try:
+            while True:
+                if cancel_check and cancel_check():
+                    raise ProviderCancelled("使用者中止，已取消 Tomato 任務。")
+                reply = self._request("GET", f"/api/jobs?id={job_id}")
+                items = reply.get("items") if isinstance(reply, dict) else None
+                item = next((entry for entry in items or []
+                             if isinstance(entry, dict) and entry.get("id") == job_id), None)
+                if item is None:
+                    raise ProviderError("Tomato 任務清單找不到剛建立的任務。")
+                state = str(item.get("state") or "").lower()
+                options = item.get("format_options")
+                if options and not format_sent:
+                    values = [entry.get("value") for entry in options if isinstance(entry, dict)]
+                    if "txt" not in values:
+                        raise ProviderError("Tomato 提供的輸出格式選項沒有 txt。")
+                    self._request("POST", f"/api/jobs/{job_id}/format", {"value": "txt"})
+                    format_sent = True
+                if state == "done":
+                    finished = True
+                    break
+                if state in FAILED_STATES:
+                    finished = True
+                    raise ProviderError(f"Tomato 任務失敗（{state}）：{item.get('message') or '未提供原因'}")
+                if time.monotonic() > deadline:
+                    raise ProviderError("等待 Tomato 任務完成逾時，已取消。")
+                if progress and isinstance(item.get("progress"), dict):
+                    saved, total = item["progress"].get("saved_chapters"), item["progress"].get("chapter_total")
+                    if saved is not None and total:
+                        progress(f"[Tomato] 第 {start}~{end} 章：{saved}/{total}")
+                time.sleep(self.poll_interval)
+        except BaseException:
+            if not finished:
+                self._cancel_job(job_id)  # never leave a job running behind a reused process
+            raise
         path, text = self._find_output(book_id)
         bodies = parse_tomato_txt(text, run)
         try:

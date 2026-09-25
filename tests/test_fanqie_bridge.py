@@ -50,6 +50,12 @@ def test_parse_tomato_txt_drops_volume_heading_between_chapters_only():
     assert bodies == {"1": "甲文", "2": "乙文"}
 
 
+def test_parse_tomato_txt_ignores_a_story_line_that_repeats_a_later_title():
+    text = tomato_txt(BOOK_ID, [("第1章 甲", ["甲文", "第2章 乙", "還是甲文"]), ("第2章 乙", ["乙文"])])
+    bodies = fb.parse_tomato_txt(text, chapters_of(("1", "第1章 甲", 1), ("2", "第2章 乙", 2)))
+    assert bodies == {"1": "甲文\n\n第2章 乙\n\n還是甲文", "2": "乙文"}
+
+
 def test_parse_tomato_txt_fails_closed():
     good = tomato_txt(BOOK_ID, [("第1章 甲", ["甲文"]), ("第2章 乙", ["乙文"])])
     with pytest.raises(fb.ProviderError, match="找不到章節標題"):
@@ -67,8 +73,9 @@ def test_parse_tomato_txt_fails_closed():
 class FakeTomato:
     """Stands in for `TomatoNovelDownloader --server`; records how it was driven."""
 
-    def __init__(self, book_titles, ask_format=True, fail_message=None, offer=("txt", "epub"), prewarm=False):
-        self.prewarm = prewarm
+    def __init__(self, book_titles, ask_format=True, fail_message=None, offer=("txt", "epub"), prewarm=False,
+                 poll_error=False):
+        self.prewarm, self.poll_error = prewarm, poll_error
         self.book_titles = book_titles  # {order: (title, [paragraphs])}
         self.ask_format = ask_format
         self.fail_message = fail_message
@@ -105,6 +112,8 @@ class FakeTomato:
                 job_id = int(parse_qs(url.query)["id"][0])
                 job = fake.jobs[job_id]
                 job["polls"] += 1
+                if fake.poll_error and job["polls"] >= 2:
+                    return self._reply({"error": "boom"}, status=500)
                 item = {"id": job_id, "book_id": job["book_id"], "format_options": None,
                         "message": None, "progress": {"saved_chapters": 1, "chapter_total": 2},
                         "state": "running"}
@@ -270,6 +279,17 @@ def test_bridge_reports_failed_job_and_missing_txt_option(tmp_path, exe):
         assert fake.cancelled == [1]
     finally:
         provider.close()
+
+
+def test_bridge_cancels_the_job_when_polling_breaks(tmp_path, exe):
+    fake = FakeTomato(BOOK, poll_error=True)
+    provider = make_provider(tmp_path, exe, fake)
+    try:
+        with pytest.raises(fb.ProviderError):
+            provider.fetch_chapters(BOOK_ID, chapters_of(("1", "第1章 標題1", 1)))
+    finally:
+        provider.close()
+    assert fake.cancelled == [1]
 
 
 def test_bridge_cancel_stops_the_job(tmp_path, exe):
