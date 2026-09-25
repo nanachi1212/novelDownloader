@@ -314,6 +314,34 @@ def test_closing_while_the_bridge_is_still_starting_does_not_block(tmp_path, exe
     assert fake.servers[0].socket.fileno() == -1
 
 
+def test_waiting_job_can_be_cancelled_and_a_closed_bridge_never_restarts(tmp_path, exe):
+    fake = FakeTomato(BOOK)
+    provider = make_provider(tmp_path, exe, fake)
+    provider._job_lock.acquire()  # another queue job is using the bridge
+    try:
+        with pytest.raises(fb.ProviderCancelled):
+            provider.fetch_chapters(BOOK_ID, chapters_of(("1", "第1章 標題1", 1)), cancel_check=lambda: True)
+        outcome = []
+
+        def waiter():
+            try:
+                provider.fetch_chapters(BOOK_ID, chapters_of(("1", "第1章 標題1", 1)))
+            except fb.ProviderError as exc:
+                outcome.append(exc)
+
+        thread = threading.Thread(target=waiter)
+        thread.start()
+        time.sleep(0.3)
+        provider.close()  # app is closing while a second job is queued behind the lock
+        thread.join(5)
+        assert not thread.is_alive() and isinstance(outcome[0], fb.ProviderCancelled)
+    finally:
+        provider._job_lock.release()
+    with pytest.raises(fb.ProviderCancelled):
+        provider.fetch_chapters(BOOK_ID, chapters_of(("1", "第1章 標題1", 1)))
+    assert fake.spawns == []
+
+
 def test_bridge_rejects_wrong_titles_and_bad_exe(tmp_path, exe):
     fake = FakeTomato(BOOK)
     provider = make_provider(tmp_path, exe, fake)

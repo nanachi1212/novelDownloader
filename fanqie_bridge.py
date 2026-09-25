@@ -191,7 +191,7 @@ class TomatoBridgeProvider(FullTextProvider):
         self._base = None
         self._server_lock = threading.RLock()  # serializes startups only
         self._proc_lock = threading.Lock()     # guards _proc/_base; never held while waiting
-        self._closing = threading.Event()
+        self._closed = threading.Event()  # close() is permanent for this instance
         self._job_lock = threading.Lock()
 
     # paths
@@ -244,7 +244,8 @@ class TomatoBridgeProvider(FullTextProvider):
         with self._server_lock:
             if self._proc is not None and self._proc.poll() is None and self._base:
                 return
-            self._closing.clear()
+            if self._closed.is_set():
+                raise ProviderCancelled("Tomato bridge 已關閉。")
             self._stop_process()
             exe = validate_exe_path(self.exe_path)
             self.data_dir.mkdir(parents=True, exist_ok=True)
@@ -269,7 +270,7 @@ class TomatoBridgeProvider(FullTextProvider):
             try:
                 self._wait_ready(proc, base, cancel_check)
                 with self._proc_lock:
-                    if self._closing.is_set():
+                    if self._closed.is_set():
                         raise ProviderCancelled("Tomato bridge 已關閉。")
                     self._base = base
             except BaseException:
@@ -279,7 +280,7 @@ class TomatoBridgeProvider(FullTextProvider):
     def _wait_ready(self, proc, base, cancel_check):
         deadline = time.monotonic() + self.startup_timeout
         while True:
-            if self._closing.is_set() or (cancel_check and cancel_check()):
+            if self._closed.is_set() or (cancel_check and cancel_check()):
                 raise ProviderCancelled("使用者中止，Tomato bridge 啟動已取消。")
             if proc.poll() is not None:
                 raise ProviderError(f"Tomato EXE 啟動後立即結束（代碼 {proc.poll()}），詳見 {self.root / 'bridge.log'}")
@@ -315,7 +316,7 @@ class TomatoBridgeProvider(FullTextProvider):
 
     def close(self):
         """Terminate only the process this provider started; never waits for a startup."""
-        self._closing.set()
+        self._closed.set()
         self._stop_process()
 
     # HTTP
@@ -344,12 +345,18 @@ class TomatoBridgeProvider(FullTextProvider):
         if not chapters:
             return {}
         runs = _consecutive_runs(chapters)
-        with self._job_lock:
+        # Another queue job may hold the bridge for a long time: keep waiting cancellable.
+        while not self._job_lock.acquire(timeout=0.2):
+            if self._closed.is_set() or (cancel_check and cancel_check()):
+                raise ProviderCancelled("使用者中止，已取消等待 Tomato bridge。")
+        try:
             self._ensure_running(cancel_check)
             result = {}
             for run in runs:
                 result.update(self._run_range(book_id, run, cancel_check, progress))
             return result
+        finally:
+            self._job_lock.release()
 
     def _clean_book_state(self, book_id):
         """Drop leftovers of earlier jobs so an export holds exactly this range."""
