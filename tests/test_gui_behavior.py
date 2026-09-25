@@ -370,3 +370,12 @@ def test_cookie_header_only_keeps_matching_domain():
     assert cookies_to_header(cookies, "www.69shuba.tw") == "cf_clearance=abc; sid=1"
     assert cookies_to_header(cookies, "other.com") == "ad=x"
     assert cookies_to_header(cookies, "example.test") == ""
+
+
+def test_fanqie_bridge_button_exists_and_closing_stops_our_bridge(monkeypatch, tmp_path):
+    app, window = make_window(monkeypatch, tmp_path)
+    stopped = []
+    monkeypatch.setattr(main_window, "shutdown_providers", lambda: stopped.append(True))
+    assert window.fanqie_bridge_btn.text() == "番茄小說：完整正文橋接"
+    window.close()
+    assert stopped == [True]
