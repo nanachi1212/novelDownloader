@@ -641,12 +641,13 @@ def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
         try:
             for future in as_completed(futures):
                 n, idx, title, cache_file, downloaded, error = future.result()
-                completed += 1
                 if cache_file is deferred:
+                    # 尚未完成,provider 成功時才計入進度
                     provider_pending.append((n, idx, jobs[n - 1][1]))
                     callback("chapter", completed, total,
-                             f"[{completed}/{total}] 第{idx}章 Web 僅提供預覽,改由本機 provider 取得")
+                             f"第{idx}章 Web 僅提供預覽,改由本機 provider 取得")
                     continue
+                completed += 1
                 if error:
                     failures.append((n, idx, jobs[n - 1][1]))
                     last_error = error
@@ -666,7 +667,12 @@ def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
             save_progress(cache, status="error", last_error=str(exc))
             raise
 
-    if provider_pending:
+    counted = set()  # 已在第一輪失敗時計入進度的章節,provider 成功時不再重複計數
+
+    def run_provider_pending():
+        nonlocal fetched, completed
+        if not provider_pending:
+            return
         provider_pending.sort()
         wanted = [item for _n, _idx, ch in provider_pending for item in adapter.provider_items(ch)]
         callback("provider", 0, 1, f"[本機 provider] {len(provider_pending)} 章交由 {provider.name} 取得完整正文")
@@ -688,9 +694,13 @@ def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
             atomic_write_text(cache_file, text)
             results[n - 1] = (ch.title, cache_file)
             fetched += 1
-            completed += 1
+            if n not in counted:
+                completed += 1
             save_progress(cache, completed_count=completed, last_completed_chapter=idx, status="downloading")
             callback("chapter", completed, total, f"[{completed}/{total}] {ch.title[:30]}(本機 provider)")
+        provider_pending.clear()
+
+    run_provider_pending()
 
     if failures:
         callback("chapter", completed, total,
@@ -704,6 +714,10 @@ def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
             try:
                 content = fetch_parsed_chapter(fetcher, adapter, ch, retries)
             except (FetchError, ValueError) as exc:
+                if provider is not None and adapter.is_preview_only_error(exc.__cause__):
+                    counted.add(n)
+                    provider_pending.append((n, idx, ch))
+                    continue
                 last_error = str(exc)
                 remaining.append((idx, ch.title))
                 continue
@@ -713,6 +727,7 @@ def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
             results[n - 1] = (ch.title, cache_file)
             fetched += 1
             callback("chapter", completed, total, f"[重試成功] 第{idx}章 {ch.title[:20]}")
+        run_provider_pending()
         failures = remaining
         if len(failures) > max_failures or (failures and getattr(adapter, "require_complete_chapters", False)):
             save_progress(cache, status="error", last_error=last_error)

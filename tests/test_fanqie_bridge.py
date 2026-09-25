@@ -409,6 +409,53 @@ def test_web_preview_only_body_falls_back_to_provider_only_when_configured(pipel
     assert provider.calls == [(BOOK_ID, [("101", "第1章", 1)])]
 
 
+def test_deferred_preview_chapter_is_counted_once(pipeline, tmp_path):
+    pipeline["directory"] = _directory({**_item("101"), "title": "第1章"})
+    pipeline["reader"]["101"] = _reader(content="<p>短</p>", chapterWordNumber=2000, **PUBLIC)
+    progress = []
+    pipeline["run"](end=1, full_text_provider=ScriptedProvider({"101": "完整正文"}),
+                    callback=lambda stage, current, total, msg: progress.append((stage, current, total)))
+    assert all(current <= total for stage, current, total in progress if stage == "chapter")
+    assert ("chapter", 1, 1) in progress and ("chapter", 2, 1) not in progress
+    saved = json.loads((tmp_path / "cache" / BOOK_ID / "progress.json").read_text(encoding="utf-8"))
+    assert saved["status"] == "done"
+
+
+def test_preview_found_only_in_the_retry_pass_still_uses_the_provider(pipeline, tmp_path, monkeypatch):
+    pipeline["directory"] = _directory({**_item("101"), "title": "第1章"})
+    short = _reader(content="<p>短</p>", chapterWordNumber=2000, **PUBLIC)
+    calls = []
+
+    class FlakyFetcher:
+        def __init__(self, **_kwargs):
+            self.last_response_headers = {}
+            self.last_status_code = 200
+
+        def get(self, url, **_kwargs):
+            if "/page/" in url:
+                return _meta()
+            if "/directory/detail" in url:
+                return pipeline["directory"]
+            calls.append(url)
+            if len(calls) <= 2:  # every first-pass attempt fails transiently
+                self.last_status_code = 502
+                raise FetchError("HTTP 502")
+            self.last_status_code = 200
+            return short
+
+        def polite_sleep(self):
+            pass
+
+    monkeypatch.setattr(downloader_task, "Fetcher", FlakyFetcher)
+    provider = ScriptedProvider({"101": "完整正文"})
+    progress = []
+    output = pipeline["run"](end=1, full_text_provider=provider,
+                             callback=lambda stage, current, total, msg: progress.append((stage, current, total)))
+    assert "完整正文" in output.read_text(encoding="utf-8")
+    assert provider.calls == [(BOOK_ID, [("101", "第1章", 1)])]
+    assert all(current <= total for stage, current, total in progress if stage == "chapter")
+
+
 def test_provider_errors_and_cancel_do_not_cache_or_finish(pipeline, tmp_path):
     cache_file = tmp_path / "cache" / BOOK_ID / "202.txt"
     with pytest.raises(fb.ProviderError, match="壞掉"):
