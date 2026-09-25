@@ -189,7 +189,9 @@ class TomatoBridgeProvider(FullTextProvider):
         self._spawn = spawn or subprocess.Popen
         self._proc = None
         self._base = None
-        self._server_lock = threading.RLock()
+        self._server_lock = threading.RLock()  # serializes startups only
+        self._proc_lock = threading.Lock()     # guards _proc/_base; never held while waiting
+        self._closing = threading.Event()
         self._job_lock = threading.Lock()
 
     # paths
@@ -242,7 +244,8 @@ class TomatoBridgeProvider(FullTextProvider):
         with self._server_lock:
             if self._proc is not None and self._proc.poll() is None and self._base:
                 return
-            self._proc = self._base = None
+            self._closing.clear()
+            self._stop_process()
             exe = validate_exe_path(self.exe_path)
             self.data_dir.mkdir(parents=True, exist_ok=True)
             self.library_dir.mkdir(parents=True, exist_ok=True)
@@ -260,19 +263,23 @@ class TomatoBridgeProvider(FullTextProvider):
                         stdout=log, stderr=subprocess.STDOUT, creationflags=flags)
                 except OSError as exc:
                     raise ProviderError(f"無法啟動 Tomato EXE：{exc}") from exc
-            self._proc = proc
+            with self._proc_lock:
+                self._proc = proc
             base = f"http://127.0.0.1:{port}"
             try:
                 self._wait_ready(proc, base, cancel_check)
+                with self._proc_lock:
+                    if self._closing.is_set():
+                        raise ProviderCancelled("Tomato bridge 已關閉。")
+                    self._base = base
             except BaseException:
                 self._stop_process()
                 raise
-            self._base = base
 
     def _wait_ready(self, proc, base, cancel_check):
         deadline = time.monotonic() + self.startup_timeout
         while True:
-            if cancel_check and cancel_check():
+            if self._closing.is_set() or (cancel_check and cancel_check()):
                 raise ProviderCancelled("使用者中止，Tomato bridge 啟動已取消。")
             if proc.poll() is not None:
                 raise ProviderError(f"Tomato EXE 啟動後立即結束（代碼 {proc.poll()}），詳見 {self.root / 'bridge.log'}")
@@ -292,7 +299,8 @@ class TomatoBridgeProvider(FullTextProvider):
             time.sleep(0.5)
 
     def _stop_process(self):
-        proc, self._proc, self._base = self._proc, None, None
+        with self._proc_lock:
+            proc, self._proc, self._base = self._proc, None, None
         if proc is None or proc.poll() is not None:
             return
         try:
@@ -306,9 +314,9 @@ class TomatoBridgeProvider(FullTextProvider):
                 logger.warning("Cannot stop Tomato bridge process", exc_info=True)
 
     def close(self):
-        """Terminate only the process this provider started."""
-        with self._server_lock:
-            self._stop_process()
+        """Terminate only the process this provider started; never waits for a startup."""
+        self._closing.set()
+        self._stop_process()
 
     # HTTP
     def _request(self, method, path, payload=None, base=None, timeout=15):

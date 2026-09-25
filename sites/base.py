@@ -21,6 +21,7 @@ class SiteAdapter:
     encoding: str = "utf-8"
     max_chapter_workers: int = 8  # 受 Session／反爬限制的網站可降為 1
     supports_full_text_provider: bool = False  # True 時可搭配 fanqie_bridge 這類本機完整正文 provider
+    full_text_provider_active: bool = False    # 本次下載實際有 provider(由 download_novel 設定)
 
     def default_request_headers(self) -> dict[str, str]:
         """Site-specific public request headers; callers may override them."""

@@ -1,6 +1,7 @@
 """Fanqie full-text provider tests.  No third-party EXE, network or real story text."""
 import json
 import socket
+import time
 from pathlib import Path
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -66,7 +67,8 @@ def test_parse_tomato_txt_fails_closed():
 class FakeTomato:
     """Stands in for `TomatoNovelDownloader --server`; records how it was driven."""
 
-    def __init__(self, book_titles, ask_format=True, fail_message=None, offer=("txt", "epub")):
+    def __init__(self, book_titles, ask_format=True, fail_message=None, offer=("txt", "epub"), prewarm=False):
+        self.prewarm = prewarm
         self.book_titles = book_titles  # {order: (title, [paragraphs])}
         self.ask_format = ask_format
         self.fail_message = fail_message
@@ -98,7 +100,7 @@ class FakeTomato:
             def do_GET(self):
                 url = urlparse(self.path)
                 if url.path == "/api/status":
-                    return self._reply({"prewarm_in_progress": False, "prewarm_error": None,
+                    return self._reply({"prewarm_in_progress": fake.prewarm, "prewarm_error": None,
                                         "save_dir": library})
                 job_id = int(parse_qs(url.query)["id"][0])
                 job = fake.jobs[job_id]
@@ -288,6 +290,30 @@ def test_bridge_cancel_stops_the_job(tmp_path, exe):
     assert fake.cancelled == [1]
 
 
+def test_closing_while_the_bridge_is_still_starting_does_not_block(tmp_path, exe):
+    fake = FakeTomato(BOOK, prewarm=True)  # never becomes ready
+    provider = make_provider(tmp_path, exe, fake, startup_timeout=60)
+    outcome = []
+
+    def start():
+        try:
+            provider.fetch_chapters(BOOK_ID, chapters_of(("1", "第1章 標題1", 1)))
+        except fb.ProviderError as exc:
+            outcome.append(exc)
+
+    worker = threading.Thread(target=start)
+    worker.start()
+    deadline = time.monotonic() + 5
+    while not fake.spawns and time.monotonic() < deadline:
+        time.sleep(0.01)
+    began = time.monotonic()
+    provider.close()
+    assert time.monotonic() - began < 2
+    worker.join(5)
+    assert not worker.is_alive() and isinstance(outcome[0], fb.ProviderCancelled)
+    assert fake.servers[0].socket.fileno() == -1
+
+
 def test_bridge_rejects_wrong_titles_and_bad_exe(tmp_path, exe):
     fake = FakeTomato(BOOK)
     provider = make_provider(tmp_path, exe, fake)
@@ -404,8 +430,10 @@ def test_web_preview_only_body_falls_back_to_provider_only_when_configured(pipel
     with pytest.raises(FetchError, match="僅提供預覽"):
         pipeline["run"](end=1)
     provider = ScriptedProvider({"101": "完整正文"})
+    before = len(pipeline["reader_calls"])
     output = pipeline["run"](end=1, full_text_provider=provider)
     assert "完整正文" in output.read_text(encoding="utf-8") and "短" not in output.read_text(encoding="utf-8")
+    assert len(pipeline["reader_calls"]) == before + 1  # a confirmed preview is not retried
     assert provider.calls == [(BOOK_ID, [("101", "第1章", 1)])]
 
 

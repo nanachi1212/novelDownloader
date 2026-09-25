@@ -310,7 +310,6 @@ def fetch_parsed_chapter(fetcher, adapter, chapter, retries: int, on_retry=None)
             if not adapter.retryable_parse_error(e):
                 raise
             last_err = ValueError(str(e))
-            last_err.__cause__ = e  # 保留原始例外,呼叫端才能分辨「Web 只有預覽」
     raise last_err
 
 
@@ -420,6 +419,7 @@ def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
     provider = full_text_provider
     if provider is None and getattr(adapter, "supports_full_text_provider", False):
         provider = adapter.default_full_text_provider()
+    adapter.full_text_provider_active = provider is not None
     request_headers = {**adapter.default_request_headers(), **(request_headers or {})}
     fetcher = Fetcher(encoding=adapter.encoding, delay=delay, headers=request_headers, timeout=timeout)
     request_retries = min(retries, getattr(adapter, "max_request_retries", retries))
@@ -614,11 +614,13 @@ def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
             try:
                 content = fetch_parsed_chapter(active_fetcher, adapter, ch, retries, on_retry)
             except (FetchError, ValueError) as exc:
-                if provider is not None and adapter.is_preview_only_error(exc.__cause__):
-                    return n, idx, ch.title, deferred, False, ""
                 # 單章失敗(網站偶發 404/逾時,或該章解析結果是空正文/選錯區塊)不寫快取,
                 # 交由呼叫端決定是否中止整本;絕不能讓單一章節的 ValueError 弄垮整批下載。
                 return n, idx, ch.title, None, False, str(exc)
+            except Exception as exc:
+                if provider is not None and adapter.is_preview_only_error(exc):
+                    return n, idx, ch.title, deferred, False, ""
+                raise
             if is_generic and n == 1 and len(content) < 80:
                 raise ValueError(
                     f"[自動偵測] 第一章只解析出 {len(content)} 字,通用模式可能抓錯正文區塊,"
@@ -714,13 +716,15 @@ def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
             try:
                 content = fetch_parsed_chapter(fetcher, adapter, ch, retries)
             except (FetchError, ValueError) as exc:
-                if provider is not None and adapter.is_preview_only_error(exc.__cause__):
-                    counted.add(n)
-                    provider_pending.append((n, idx, ch))
-                    continue
                 last_error = str(exc)
                 remaining.append((idx, ch.title))
                 continue
+            except Exception as exc:
+                if provider is not None and adapter.is_preview_only_error(exc):
+                    counted.add(n)
+                    provider_pending.append((n, idx, ch))
+                    continue
+                raise
             adapter.save_cache_state(cache)
             atomic_write_text(cache_file, content)
             fetcher.polite_sleep()

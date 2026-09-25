@@ -313,6 +313,8 @@ class FanqieAdapter(SiteAdapter):
                        {"book_id": self._book_id, "mode": self._decoder_mode})
 
     def retryable_parse_error(self, error):
+        if isinstance(error, WebPreviewOnly) and self.full_text_provider_active:
+            return False  # 已有 provider 可補完整正文,不必為確定的預覽白等重試
         return isinstance(error, (FanqieError, DecodeFailed)) and not isinstance(error, AccessVerificationRequired)
 
     def default_full_text_provider(self):
@@ -335,7 +337,7 @@ class FanqieAdapter(SiteAdapter):
         return any(access.get(item_id) != "public_candidate" for item_id in self._chapter_item_ids(chapter))
 
     def is_preview_only_error(self, error):
-        return isinstance(error, WebPreviewOnly)  # error 可能是 None(沒有原始例外)
+        return isinstance(error, WebPreviewOnly)
 
     def provider_items(self, chapter):
         """The directory entries a provider must return for one pipeline chapter."""
