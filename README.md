@@ -58,10 +58,10 @@ python novel_dl.py <網址> --start 100 --end 200
 Tomato bridge 是**選用功能**，預設仍使用原本的 Web reader：
 
 - Web 能取得完整正文的章節，直接下載，不會啟動 bridge。
-- 只有 Web 僅提供預覽的章節，才會交給你指定的 [TomatoNovelDownloader](https://github.com/zhongbai2333/Tomato-Novel-Downloader) EXE 取得完整正文。同一次下載可以混合 Web 與 bridge 章節，輸出的章節順序不變。
+- 只有 Web 僅提供預覽、或目錄未標示為公開的章節，才會交給你指定的 [TomatoNovelDownloader](https://github.com/zhongbai2333/Tomato-Novel-Downloader) EXE 取得完整正文；目錄未標示公開的章節會直接交給它，不會先嘗試 Web。同一次下載可以混合 Web 與 bridge 章節，輸出的章節順序不變。
 - 取得的正文會寫入 novelDownloader 原本的章節快取，之後的 TXT／EPUB 輸出與 cache／續傳都與其他章節相同。已在快取內的章節重跑時不會再啟動 bridge。
 - **第三方 EXE 不包含在 novelDownloader 的 release 內**，也不會由本程式下載或散布；請自行下載相容版本（已用 `TomatoNovelDownloader-Win64-v2.4.15.exe` 驗證）。
-- 程式在本機 `127.0.0.1` 啟動該 EXE 的 `--server`（資料放在使用者資料夾的 `fanqie-bridge`）。如果預設埠 18423 已有你自己啟動的實例，本程式會改用另一個埠，不會使用也不會結束你的實例；取消下載或關閉本程式時，只會結束自己啟動的那一個。
+- 程式在本機 `127.0.0.1` 啟動該 EXE 的 `--server`（資料放在使用者資料夾的 `fanqie-bridge`）。如果預設埠 18423 已有你自己啟動的實例，本程式會改用另一個埠，不會使用也不會結束你的實例；取消下載時只會取消對應的 Tomato 任務，該程序會保留到關閉本程式時才結束；結束時只會結束自己啟動的那一個。
 - 這只是「完整正文 provider」：本程式不繞過付費、SVIP、登入或平台權限，能否取得完整正文取決於網站當下的回應與你指定的工具。
 
 #### 番茄小說完整正文下載
