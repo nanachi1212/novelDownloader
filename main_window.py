@@ -1,4 +1,5 @@
 """PyQt6 圖形界面:下載隊列、章節範圍、儲存位置、書名編輯、進度與日誌。"""
+import os
 import sys
 import threading
 import json
@@ -52,6 +53,7 @@ from state_io import LatestJsonWriter, read_json, write_json
 from app_paths import prepare_app_data
 from PyQt6.QtWidgets import QComboBox
 from sites import ADAPTERS, USER_ADAPTER_ERRORS, get_adapter, reload_adapters
+from fanqie_bridge import ProviderError, load_exe_path, save_exe_path, shutdown_providers
 from fanqie_preview import FanqiePreviewDialog
 
 APP_VERSION = "1.6.8-rc1"
@@ -452,6 +454,10 @@ class NovelDownloaderUI(QMainWindow):
         self.fanqie_preview_btn.setObjectName("fanqiePreviewButton")
         self.fanqie_preview_btn.clicked.connect(self.open_fanqie_preview)
         url_layout.addWidget(self.fanqie_preview_btn)
+        self.fanqie_bridge_btn = QPushButton("番茄小說：完整正文橋接")
+        self.fanqie_bridge_btn.setObjectName("fanqieBridgeButton")
+        self.fanqie_bridge_btn.clicked.connect(self.open_fanqie_bridge_settings)
+        url_layout.addWidget(self.fanqie_bridge_btn)
         layout.addLayout(url_layout)
 
         # --- 選項行（更緊湊） ---
@@ -679,6 +685,34 @@ class NovelDownloaderUI(QMainWindow):
 
     def open_fanqie_preview(self):
         FanqiePreviewDialog(self.url_input.text().strip(), self).exec()
+
+    def open_fanqie_bridge_settings(self):
+        """指定（或清除）選用的 TomatoNovelDownloader EXE。"""
+        current = load_exe_path()
+        box = QMessageBox(self)
+        box.setWindowTitle("番茄小說：完整正文橋接")
+        box.setText(
+            "目前設定：" + (current or "未設定") + "\n\n"
+            "番茄 Web 只提供預覽或目錄未標示公開的章節，預設會停止下載。"
+            "若指定你自己下載的 TomatoNovelDownloader EXE，這類章節會改由它在本機 127.0.0.1 取得完整正文，"
+            "再走原本的快取與輸出流程。本程式不內含、不上傳該工具，關閉時只會結束自己啟動的那一個。")
+        choose = box.addButton("選擇 EXE…", QMessageBox.ButtonRole.AcceptRole)
+        clear = box.addButton("清除設定", QMessageBox.ButtonRole.DestructiveRole)
+        box.addButton("關閉", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        clicked = box.clickedButton()
+        try:
+            if clicked is choose:
+                path, _ = QFileDialog.getOpenFileName(
+                    self, "選擇 TomatoNovelDownloader EXE", current or str(Path.home()), "程式 (*.exe)")
+                if path:
+                    save_exe_path(os.path.normpath(path))
+                    self.log.append(f"已設定番茄完整正文橋接：{os.path.normpath(path)}")
+            elif clicked is clear:
+                save_exe_path("")
+                self.log.append("已清除番茄完整正文橋接設定。")
+        except (ProviderError, OSError) as exc:
+            QMessageBox.warning(self, "設定失敗", str(exc))
 
     def job_text(self, job):
         rng = f"第{job['start'] or 1}~{job['end'] or '末'}章" if (job["start"] or job["end"]) else "全書"
@@ -1411,6 +1445,7 @@ class NovelDownloaderUI(QMainWindow):
         self.queue_writer.submit(self.queue_file, serialize_queue_jobs(self.jobs))
 
     def closeEvent(self, event):
+        shutdown_providers()
         self.queue_writer.close(timeout=2)
         super().closeEvent(event)
 

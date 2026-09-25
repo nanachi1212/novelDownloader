@@ -12,6 +12,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from urllib.parse import parse_qsl, urlparse
 
+from fanqie_bridge import ProviderCancelled, ProviderError
 from fetcher import FetchError, Fetcher
 from sites import get_adapter
 from sites.base import Chapter, join_pages
@@ -309,6 +310,7 @@ def fetch_parsed_chapter(fetcher, adapter, chapter, retries: int, on_retry=None)
             if not adapter.retryable_parse_error(e):
                 raise
             last_err = ValueError(str(e))
+            last_err.__cause__ = e  # 保留原始例外,呼叫端才能分辨「Web 只有預覽」
     raise last_err
 
 
@@ -403,8 +405,11 @@ def write_txt_from_files(path, header, chapters, transform=None):
 def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
                    start=None, end=None, cancel_check=None, retries=5,
                    output_format="txt", filename_format="title", request_headers=None,
-                   timeout=20, chapter_workers=3):
+                   timeout=20, chapter_workers=3, full_text_provider=None):
     """下載小說並輸出 TXT,回傳輸出檔路徑。
+
+    full_text_provider:Web 來源拿不到完整正文時的本機 provider(fanqie_bridge);
+    None 時由支援的 adapter 依使用者設定決定,未設定就維持只走 Web 來源。
 
     callback(stage, current, total, msg),stage: 'catalog'|'chapter'|'done'
     start/end:1-based 章節範圍(含端點),None 表示不限
@@ -412,6 +417,9 @@ def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
     """
     callback = callback or (lambda *a: None)
     adapter = get_adapter(url)
+    provider = full_text_provider
+    if provider is None and getattr(adapter, "supports_full_text_provider", False):
+        provider = adapter.default_full_text_provider()
     request_headers = {**adapter.default_request_headers(), **(request_headers or {})}
     fetcher = Fetcher(encoding=adapter.encoding, delay=delay, headers=request_headers, timeout=timeout)
     request_retries = min(retries, getattr(adapter, "max_request_retries", retries))
@@ -524,8 +532,12 @@ def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
     if lo > hi:
         raise ValueError(f"章節範圍無效:{lo} > {hi}(全書共 {total_all} 章)")
     jobs = [(i, book.chapters[i - 1]) for i in range(lo, hi + 1)]
-    for _index, chapter in jobs:
-        adapter.validate_download_chapter(chapter)
+    # 目錄未標示公開的章節:有 provider 就交給它,沒有則照舊在此拒絕。
+    provider_wanted = {n for n, (_index, chapter) in enumerate(jobs, 1)
+                       if provider is not None and adapter.prefers_full_text_provider(chapter)}
+    for n, (_index, chapter) in enumerate(jobs, 1):
+        if n not in provider_wanted:
+            adapter.validate_download_chapter(chapter)
     total = len(jobs)
     range_note = f",本次範圍第 {lo}~{hi} 章" if (start or end) else ""
     callback("catalog", 1, 1,
@@ -543,6 +555,19 @@ def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
                  f"[快取提醒] 目錄章數由 {prior_progress['total_chapters']} 變成 {total_all},"
                  "網站章節可能有增刪或改版,既有快取的章號可能對不上;不確定時建議清空快取後重新下載")
     save_progress(cache, url=url, title=book.title, total_chapters=total_all, range=[lo, hi], status="downloading")
+
+    def cached_text(chapter, idx):
+        try:
+            return (cache / adapter.chapter_cache_filename(chapter, idx)).read_text(encoding="utf-8").strip()
+        except (OSError, UnicodeError):
+            return ""
+
+    # 已在快取的章節照常讀快取;其餘由 provider 章節等 Web 章節跑完後一併處理。
+    provider_pending = [(n, jobs[n - 1][0], jobs[n - 1][1]) for n in sorted(provider_wanted)
+                        if not cached_text(jobs[n - 1][1], jobs[n - 1][0])]
+    web_jobs = [(n, idx, ch) for n, (idx, ch) in enumerate(jobs, 1)
+                if n not in {item[0] for item in provider_pending}]
+    deferred = object()  # fetch_job 的回傳標記:此章 Web 只有預覽,改交給 provider
 
     results = [None] * total  # (章節標題, 快取檔案)，固定索引保證輸出順序
     fetched = 0
@@ -589,6 +614,8 @@ def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
             try:
                 content = fetch_parsed_chapter(active_fetcher, adapter, ch, retries, on_retry)
             except (FetchError, ValueError) as exc:
+                if provider is not None and adapter.is_preview_only_error(exc.__cause__):
+                    return n, idx, ch.title, deferred, False, ""
                 # 單章失敗(網站偶發 404/逾時,或該章解析結果是空正文/選錯區塊)不寫快取,
                 # 交由呼叫端決定是否中止整本;絕不能讓單一章節的 ValueError 弄垮整批下載。
                 return n, idx, ch.title, None, False, str(exc)
@@ -609,12 +636,17 @@ def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
     failures = []          # [(n, idx, 章節)]
     last_error = ""
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = [pool.submit(fetch_job, n, idx, ch) for n, (idx, ch) in enumerate(jobs, 1)]
+        futures = [pool.submit(fetch_job, n, idx, ch) for n, idx, ch in web_jobs]
         completed = 0
         try:
             for future in as_completed(futures):
                 n, idx, title, cache_file, downloaded, error = future.result()
                 completed += 1
+                if cache_file is deferred:
+                    provider_pending.append((n, idx, jobs[n - 1][1]))
+                    callback("chapter", completed, total,
+                             f"[{completed}/{total}] 第{idx}章 Web 僅提供預覽,改由本機 provider 取得")
+                    continue
                 if error:
                     failures.append((n, idx, jobs[n - 1][1]))
                     last_error = error
@@ -633,6 +665,32 @@ def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
                 future.cancel()
             save_progress(cache, status="error", last_error=str(exc))
             raise
+
+    if provider_pending:
+        provider_pending.sort()
+        wanted = [item for _n, _idx, ch in provider_pending for item in adapter.provider_items(ch)]
+        callback("provider", 0, 1, f"[本機 provider] {len(provider_pending)} 章交由 {provider.name} 取得完整正文")
+        try:
+            bodies = provider.fetch_chapters(
+                adapter.book_id(url), wanted, cancel_check=cancel_check,
+                progress=lambda message: callback("provider", 0, 1, message))
+        except ProviderCancelled as exc:
+            raise Cancelled("使用者中止,已下載的章節保留在快取,重跑會續傳") from exc
+        except ProviderError as exc:
+            save_progress(cache, status="error", last_error=str(exc))
+            raise
+        for n, idx, ch in provider_pending:
+            text = join_pages([bodies[item.item_id] for item in adapter.provider_items(ch)])
+            if not text.strip():
+                save_progress(cache, status="error", last_error=f"provider 回傳空正文:第{idx}章")
+                raise ProviderError(f"provider 回傳空正文：第{idx}章 {ch.title}")
+            cache_file = cache / adapter.chapter_cache_filename(ch, idx)
+            atomic_write_text(cache_file, text)
+            results[n - 1] = (ch.title, cache_file)
+            fetched += 1
+            completed += 1
+            save_progress(cache, completed_count=completed, last_completed_chapter=idx, status="downloading")
+            callback("chapter", completed, total, f"[{completed}/{total}] {ch.title[:30]}(本機 provider)")
 
     if failures:
         callback("chapter", completed, total,

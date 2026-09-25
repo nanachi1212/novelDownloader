@@ -20,6 +20,7 @@ class SiteAdapter:
     domains: list = []      # 可處理的網域,例如 ["69shuba.com", "www.69shuba.com"]
     encoding: str = "utf-8"
     max_chapter_workers: int = 8  # 受 Session／反爬限制的網站可降為 1
+    supports_full_text_provider: bool = False  # True 時可搭配 fanqie_bridge 這類本機完整正文 provider
 
     def default_request_headers(self) -> dict[str, str]:
         """Site-specific public request headers; callers may override them."""
@@ -86,6 +87,22 @@ class SiteAdapter:
     def retryable_parse_error(self, error: Exception) -> bool:
         """Identify site parser errors eligible for the chapter retry loop."""
         return False
+
+    def default_full_text_provider(self):
+        """supports_full_text_provider 的網站:回傳使用者設定的 provider,未設定回傳 None。"""
+        return None
+
+    def prefers_full_text_provider(self, chapter: Chapter) -> bool:
+        """Web 來源不會提供這章完整正文時回傳 True,改由 provider 取得。"""
+        return False
+
+    def is_preview_only_error(self, error: Exception) -> bool:
+        """parse_chapter 拋出的錯誤是否代表「Web 只有預覽」。"""
+        return False
+
+    def provider_items(self, chapter: Chapter) -> list:
+        """交給 provider 的章節項目(fanqie_bridge.ProviderChapter 列表)。"""
+        raise NotImplementedError
 
     def chapter_source_url(self, html: str, url: str):
         """章節頁以 JavaScript 載入正文時,回傳真正正文 URL;一般網站回傳 None。"""

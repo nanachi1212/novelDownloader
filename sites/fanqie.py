@@ -38,6 +38,10 @@ class AccessVerificationRequired(FanqieError):
     """站方要求登入、人機驗證或其他存取驗證。"""
 
 
+class WebPreviewOnly(FanqieError):
+    """Web reader 只回傳預覽（截斷正文），沒有完整章節。"""
+
+
 @dataclass(frozen=True)
 class FanqieChapter:
     item_id: str
@@ -236,6 +240,7 @@ class FanqieAdapter(SiteAdapter):
     max_chapter_workers = 1
     inspect_each_request_attempt = True
     require_complete_chapters = True
+    supports_full_text_provider = True
 
     def default_request_headers(self):
         return {"User-Agent": MOBILE_UA,
@@ -250,6 +255,7 @@ class FanqieAdapter(SiteAdapter):
         self._book_title = ""
         self._book_author = ""
         self._chapter_access = {}
+        self._chapter_meta = {}
         self._decoder_mode = None
         self._expected_item_id = None
         return DIRECTORY_URL.format(book_id=self._book_id)
@@ -308,6 +314,40 @@ class FanqieAdapter(SiteAdapter):
 
     def retryable_parse_error(self, error):
         return isinstance(error, (FanqieError, DecodeFailed)) and not isinstance(error, AccessVerificationRequired)
+
+    def default_full_text_provider(self):
+        """The optional local provider chosen in settings; None when not configured."""
+        from fanqie_bridge import configured_provider
+        return configured_provider()
+
+    def _chapter_item_ids(self, chapter):
+        item_ids = []
+        for url in [chapter.url, *chapter.extra_urls]:
+            match = re.fullmatch(r"https://fanqienovel\.com/reader/(\d+)", url)
+            if not match:
+                raise FanqieError("番茄章節網址沒有有效 itemId。")
+            item_ids.append(match.group(1))
+        return item_ids
+
+    def prefers_full_text_provider(self, chapter):
+        """True when the directory does not mark the chapter as clearly public."""
+        access = getattr(self, "_chapter_access", {})
+        return any(access.get(item_id) != "public_candidate" for item_id in self._chapter_item_ids(chapter))
+
+    def is_preview_only_error(self, error):
+        return isinstance(error, WebPreviewOnly)  # error 可能是 None(沒有原始例外)
+
+    def provider_items(self, chapter):
+        """The directory entries a provider must return for one pipeline chapter."""
+        from fanqie_bridge import ProviderChapter
+        meta = getattr(self, "_chapter_meta", {})
+        items = []
+        for item_id in self._chapter_item_ids(chapter):
+            if item_id not in meta:
+                raise FanqieError("番茄目錄缺少此章節的排序資料，無法交給完整正文 provider。")
+            title, order = meta[item_id]
+            items.append(ProviderChapter(item_id, title, order))
+        return items
 
     def chapter_source_url(self, html, url):
         match = re.fullmatch(r"https://fanqienovel\.com/reader/(\d+)", url)
@@ -380,6 +420,7 @@ class FanqieAdapter(SiteAdapter):
             raise FanqieError("番茄目錄缺少來源 bookId。")
         source = parse_directory_response(html)
         self._chapter_access = {item.item_id: item.access for item in source}
+        self._chapter_meta = {item.item_id: (item.title, item.order) for item in source}
         return BookInfo(
             getattr(self, "_book_title", "") or f"番茄小說_{book_id}",
             getattr(self, "_book_author", ""),
@@ -426,7 +467,9 @@ class FanqieAdapter(SiteAdapter):
             raise FanqieError("番茄 reader 章節字數格式無法確認，未保存正文。")
         if (type(expected_words) is int and expected_words > 0
                 and len(body.replace("\n", "")) < expected_words * 0.7):
-            raise FanqieError("番茄 reader 正文短於章節字數，可能是截斷內容；未保存。")
+            raise WebPreviewOnly(
+                "番茄 Web reader 僅提供預覽：正文短於章節字數，可能是截斷內容；未保存。"
+                "如需完整正文，請在「番茄小說：完整正文橋接」指定 TomatoNovelDownloader EXE。")
         if decoded.mode is not None:
             self._decoder_mode = decoded.mode
         return body
