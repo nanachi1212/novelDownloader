@@ -54,7 +54,7 @@ from PyQt6.QtWidgets import QComboBox
 from sites import ADAPTERS, USER_ADAPTER_ERRORS, get_adapter, reload_adapters
 from fanqie_preview import FanqiePreviewDialog
 
-APP_VERSION = "1.6.7"
+APP_VERSION = "1.6.8-rc1"
 
 STATUS_LABEL = {
     "pending": "⏳ 等待",
