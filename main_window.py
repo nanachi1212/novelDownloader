@@ -56,7 +56,7 @@ from sites import ADAPTERS, USER_ADAPTER_ERRORS, get_adapter, reload_adapters
 from fanqie_bridge import ProviderError, load_exe_path, save_exe_path, shutdown_providers
 from fanqie_preview import FanqiePreviewDialog
 
-APP_VERSION = "1.6.8-rc2"
+APP_VERSION = "1.6.8"
 
 STATUS_LABEL = {
     "pending": "⏳ 等待",
