@@ -29,9 +29,19 @@ function Invoke-Native([string]$FilePath, [string[]]$ArgumentList) {
 }
 
 function Find-SdkTool([string]$Name) {
+    $kitCandidates = foreach ($kitRoot in @(
+        'C:\Program Files (x86)\Windows Kits\10\bin',
+        'C:\Program Files\Windows Kits\10\bin'
+    )) {
+        if (Test-Path -LiteralPath $kitRoot) {
+            Get-ChildItem -LiteralPath $kitRoot -Directory -ErrorAction SilentlyContinue |
+                Sort-Object Name -Descending |
+                ForEach-Object { Join-Path $_.FullName "x64\$Name" }
+        }
+    }
     $candidates = @(
         (Get-Command $Name -ErrorAction SilentlyContinue).Source,
-        "C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64\$Name",
+        $kitCandidates,
         "C:\Program Files (x86)\Windows Kits\10\App Certification Kit\$Name"
     ) | Where-Object { $_ -and (Test-Path -LiteralPath $_) }
     if (-not $candidates) { throw "$Name was not found. Install the Windows 10/11 SDK." }
@@ -43,6 +53,9 @@ if (-not (Test-Path -LiteralPath $python)) {
         throw "Missing project Python and no python.exe was found on PATH: $python"
     }
     $python = $pythonFromPath.Source
+}
+if ($Architecture -ne 'x64') {
+    throw "Architecture '$Architecture' is not supported by the current x64 Python/PyInstaller environment. Use x64 or provide an architecture-matched build environment."
 }
 if ($PackageVersion -notmatch '^\d+\.\d+\.\d+\.\d+$') { throw 'PackageVersion must have four numeric components.' }
 if ($Mode -eq 'Store' -and (-not $IdentityName -or -not $Publisher)) {
