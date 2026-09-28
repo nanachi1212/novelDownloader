@@ -40,11 +40,12 @@ function Find-SdkTool([string]$Name) {
                 ForEach-Object { Join-Path $_.FullName "x64\$Name" }
         }
     }
-    $candidates = @(
-        (Get-Command $Name -ErrorAction SilentlyContinue).Source,
-        $kitCandidates,
-        "C:\Program Files (x86)\Windows Kits\10\App Certification Kit\$Name"
-    ) | Where-Object { $_ -and (Test-Path -LiteralPath $_) }
+    $candidates = @()
+    $pathTool = Get-Command $Name -ErrorAction SilentlyContinue
+    if ($pathTool) { $candidates += $pathTool.Source }
+    $candidates += $kitCandidates
+    $candidates += "C:\Program Files (x86)\Windows Kits\10\App Certification Kit\$Name"
+    $candidates = $candidates | Where-Object { $_ -and (Test-Path -LiteralPath $_) }
     if (-not $candidates) { throw "$Name was not found. Install the Windows 10/11 SDK." }
     return $candidates[0]
 }
