@@ -45,7 +45,7 @@ function Find-SdkTool([string]$Name) {
     if ($pathTool) { $candidates += $pathTool.Source }
     $candidates += $kitCandidates
     $candidates += "C:\Program Files (x86)\Windows Kits\10\App Certification Kit\$Name"
-    $candidates = $candidates | Where-Object { $_ -and (Test-Path -LiteralPath $_) }
+    $candidates = @($candidates | Where-Object { $_ -and (Test-Path -LiteralPath $_) })
     if (-not $candidates) { throw "$Name was not found. Install the Windows 10/11 SDK." }
     return $candidates[0]
 }
@@ -56,8 +56,16 @@ if (-not (Test-Path -LiteralPath $python)) {
     }
     $python = $pythonFromPath.Source
 }
-if ($Architecture -ne 'x64') {
-    throw "Architecture '$Architecture' is not supported by the current x64 Python/PyInstaller environment. Use x64 or provide an architecture-matched build environment."
+$pythonMachine = (& $python -c "import platform; print(platform.machine())" 2>$null).Trim().ToLowerInvariant()
+if ($LASTEXITCODE -ne 0 -or -not $pythonMachine) { throw "Unable to determine the architecture of Python interpreter: $python" }
+$pythonArchitecture = switch -Regex ($pythonMachine) {
+    '^(amd64|x86_64)$' { 'x64'; break }
+    '^(x86|i[3-6]86)$' { 'x86'; break }
+    '^(arm64|aarch64)$' { 'arm64'; break }
+    default { throw "Unsupported Python interpreter architecture '$pythonMachine'." }
+}
+if ($Architecture -ne $pythonArchitecture) {
+    throw "Requested architecture '$Architecture' does not match the Python/PyInstaller architecture '$pythonArchitecture'."
 }
 if ($PackageVersion -notmatch '^\d+\.\d+\.\d+\.\d+$') { throw 'PackageVersion must have four numeric components.' }
 if ($Mode -eq 'Store' -and (-not $IdentityName -or -not $Publisher)) {
