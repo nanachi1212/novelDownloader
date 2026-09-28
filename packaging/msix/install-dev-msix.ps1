@@ -8,7 +8,6 @@ param(
 $ErrorActionPreference = 'Stop'
 $package = (Resolve-Path -LiteralPath $PackagePath).Path
 $certificate = (Resolve-Path -LiteralPath $CertificatePath).Path
-Import-Certificate -FilePath $certificate -CertStoreLocation 'Cert:\CurrentUser\Root' | Out-Null
 Import-Certificate -FilePath $certificate -CertStoreLocation 'Cert:\CurrentUser\TrustedPeople' | Out-Null
 if ($InstallMachineTrust) {
     Import-Certificate -FilePath $certificate -CertStoreLocation 'Cert:\LocalMachine\TrustedPeople' | Out-Null
