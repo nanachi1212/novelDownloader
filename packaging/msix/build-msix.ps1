@@ -5,6 +5,8 @@ param(
     [string]$IdentityName,
     [string]$Publisher,
     [string]$PublisherDisplayName = 'novelDownloader',
+    [string]$PackageDisplayName,
+    [string]$AppDisplayName,
     [string]$PackageVersion = '1.6.8.0',
     [ValidateSet('x64', 'x86', 'arm64')]
     [string]$Architecture = 'x64',
@@ -73,6 +75,8 @@ if ($Mode -eq 'Store' -and (-not $IdentityName -or -not $Publisher)) {
 }
 if (-not $IdentityName) { $IdentityName = if ($Mode -eq 'Development') { 'novelDownloader.Dev' } else { 'novelDownloader.Validation' } }
 if (-not $Publisher) { $Publisher = if ($Mode -eq 'Development') { 'CN=novelDownloader Development' } else { 'CN=novelDownloader Validation' } }
+if (-not $PackageDisplayName) { $PackageDisplayName = if ($Mode -eq 'Store') { 'NNC-NovelDownloader' } else { 'novelDownloader' } }
+if (-not $AppDisplayName) { $AppDisplayName = if ($Mode -eq 'Store') { 'NNC-NovelDownloader' } else { 'novelDownloader' } }
 
 if (Test-Path -LiteralPath $work) { Remove-Item -LiteralPath $work -Recurse -Force }
 if (Test-Path -LiteralPath $output) { Remove-Item -LiteralPath $output -Recurse -Force }
@@ -95,6 +99,8 @@ $replacements = @{
     '__IDENTITY_NAME__' = (XmlEscape $IdentityName)
     '__PUBLISHER__' = (XmlEscape $Publisher)
     '__PUBLISHER_DISPLAY_NAME__' = (XmlEscape $PublisherDisplayName)
+    '__PACKAGE_DISPLAY_NAME__' = (XmlEscape $PackageDisplayName)
+    '__APP_DISPLAY_NAME__' = (XmlEscape $AppDisplayName)
     '__VERSION__' = $PackageVersion
     '__ARCHITECTURE__' = $Architecture
 }
@@ -102,7 +108,8 @@ foreach ($key in $replacements.Keys) { $xml = $xml.Replace($key, $replacements[$
 [IO.File]::WriteAllText($manifest, $xml, [Text.UTF8Encoding]::new($false))
 
 $makeappx = Find-SdkTool 'makeappx.exe'
-$package = Join-Path $output "novelDownloader_$($PackageVersion)_$($Architecture).msix"
+$packageBaseName = if ($Mode -eq 'Store') { $PackageDisplayName } else { 'novelDownloader' }
+$package = Join-Path $output "${packageBaseName}_$($PackageVersion)_$($Architecture).msix"
 Invoke-Native $makeappx @('pack', '/d', $stage, '/p', $package, '/o')
 
 if ($Mode -eq 'Development') {
