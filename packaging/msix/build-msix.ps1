@@ -35,6 +35,7 @@ function Find-SdkTool([string]$Name) {
     )) {
         if (Test-Path -LiteralPath $kitRoot) {
             Get-ChildItem -LiteralPath $kitRoot -Directory -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -match '^\d+\.\d+\.\d+\.\d+$' } |
                 Sort-Object Name -Descending |
                 ForEach-Object { Join-Path $_.FullName "x64\$Name" }
         }
