@@ -25,6 +25,10 @@ pwsh .\packaging\msix\build-msix.ps1 -Mode Store `
   -Publisher '<Partner Center Publisher>' `
   -PublisherDisplayName '<Publisher display name>' `
   -PackageVersion '1.6.8.0'
+
+Store mode defaults the package and application display names to `NNC-NovelDownloader`.
+Override them with `-PackageDisplayName` and `-AppDisplayName` when a different Store listing name is required.
+The resulting Store package is unsigned and is named `NNC-NovelDownloader_<version>_<architecture>.msix`.
 ```
 
 The Store submission is MSIX. Microsoft Store re-signs the accepted package; no paid code-signing certificate is required.
