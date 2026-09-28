@@ -18,3 +18,9 @@ user_adapters/
 # Release artifacts
 novelDownloader-v*/
 novelDownloader-v*.zip
+
+# MSIX local build and development signing output
+packaging/msix/.work/
+dist/msix/
+*.pfx
+*.cer
