@@ -19,6 +19,7 @@ $assets = Join-Path $stage 'Assets'
 $output = Join-Path $root 'dist\msix'
 $spec = Join-Path $root 'novelDownloader.spec'
 $python = Join-Path $root '.venv\Scripts\python.exe'
+$pythonFromPath = Get-Command 'python.exe' -ErrorAction SilentlyContinue
 $manifestTemplate = Join-Path $PSScriptRoot 'AppxManifest.xml.template'
 $manifest = Join-Path $stage 'AppxManifest.xml'
 
@@ -37,7 +38,12 @@ function Find-SdkTool([string]$Name) {
     return $candidates[0]
 }
 
-if (-not (Test-Path -LiteralPath $python)) { throw "Missing project Python: $python" }
+if (-not (Test-Path -LiteralPath $python)) {
+    if (-not $pythonFromPath -or -not (Test-Path -LiteralPath $pythonFromPath.Source)) {
+        throw "Missing project Python and no python.exe was found on PATH: $python"
+    }
+    $python = $pythonFromPath.Source
+}
 if ($PackageVersion -notmatch '^\d+\.\d+\.\d+\.\d+$') { throw 'PackageVersion must have four numeric components.' }
 if ($Mode -eq 'Store' -and (-not $IdentityName -or -not $Publisher)) {
     throw 'Store mode requires the Partner Center Identity Name and Publisher. No development identity is used for Store mode.'
