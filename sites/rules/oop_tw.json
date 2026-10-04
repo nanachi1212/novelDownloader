@@ -1,0 +1,31 @@
+{
+  "id": "oop_tw",
+  "domains": ["oop.tw", "www.oop.tw"],
+  "encoding": null,
+  "max_chapter_workers": 2,
+  "url": {
+    "book_id_regex": "/(?:abooka|areada)/(?P<book_id>[^/]+)/",
+    "catalog_template": "https://www.oop.tw/abooka/{book_id}/",
+    "cache_id_template": "oop-tw-{book_id}"
+  },
+  "catalog": {
+    "title_selector": "h1.novel-title",
+    "author_selector": ".novel-author",
+    "author_strip_regex": "^作者\\s*[:：]?\\s*",
+    "author_title_regex": "-\\((?P<author>[^()]+)\\)-",
+    "chapter_selector": "#ul_all_chapters a[href]",
+    "sort": "chapter_number",
+    "empty_error": "oop.tw 目錄頁找不到章節連結(#ul_all_chapters)，網站版型可能已改"
+  },
+  "pagination": {
+    "option_selector": "#catalog-content select.cp-select option[value]",
+    "query_param": "p",
+    "default_page": "1",
+    "numeric": true
+  },
+  "content": {
+    "selector": "article#article",
+    "remove_selectors": [],
+    "remove_text_regex": ["^[-－—_＿]{5,}$"]
+  }
+}
