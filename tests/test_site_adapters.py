@@ -372,3 +372,44 @@ def test_sto9_collapsed_catalog_and_chapter_layout():
     assert adapter.parse_chapter(chapter, "第1章") == "第一段正文\n\n第二段正文"
     assert isinstance(get_adapter(index_url), Sto9Adapter)
 
+
+def test_oop_tw_paginated_catalog_is_sorted_and_expanded():
+    adapter = get_adapter("https://www.oop.tw/abooka/a31674962a/")
+    assert getattr(adapter, "rule_id", None) == "oop_tw"
+    book_url = "https://www.oop.tw/abooka/a31674962a/"
+    assert adapter.catalog_url("https://www.oop.tw/areada/a31674962a/a1007753a.html") == book_url
+    assert adapter.book_id(book_url) == "oop-tw-a31674962a"
+
+    catalog = """
+    <title>星際：第一醫療師-(小艾2024)-短篇小說</title>
+    <h1 class="novel-title">星際：第一醫療師</h1>
+    <div id="catalog-content">
+      <ul id="ul_all_chapters">
+        <li><a href="/areada/a31674962a/a3a.html">第3章 陸航</a></li>
+        <li><a href="/areada/a31674962a/a1a.html">第1章 穿越</a></li>
+        <li><a href="/areada/a31674962a/a2a.html">第2章 離開</a></li>
+      </ul>
+      <select class="cp-select">
+        <option value="1">第1～30章</option><option value="2">第31～60章</option>
+      </select>
+    </div>
+    """
+    adapter.catalog_url(book_url)
+    book = adapter.parse_catalog(catalog)
+    assert (book.title, book.author) == ("星際：第一醫療師", "小艾2024")
+    assert [chapter.title for chapter in book.chapters] == ["第1章 穿越", "第2章 離開", "第3章 陸航"]
+    assert adapter.catalog_page_urls(catalog, book_url) == [book_url + "?p=2"]
+
+
+def test_oop_tw_chapter_uses_article_and_removes_site_separator():
+    adapter = get_adapter("https://www.oop.tw/abooka/a31674962a/")
+    chapter = """
+    <article id="article">
+      <p>【第1章 穿越】</p><p>--------------------</p>
+      <p>第一段正文</p><p>第二段正文</p>
+    </article>
+    <div>頁面推薦內容</div>
+    """
+    assert adapter.parse_chapter(chapter, "第1章 穿越") == "第一段正文\n\n第二段正文"
+    assert getattr(adapter, "rule_id", None) == "oop_tw"
+

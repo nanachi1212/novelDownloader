@@ -15,6 +15,7 @@ from .novels_com_tw import NovelsComTwAdapter
 from .zhys import ZhysAdapter
 from .sto9 import Sto9Adapter
 from .fanqie import FanqieAdapter
+from .rule_adapter import load_rule_adapter_classes
 from .base import SiteAdapter
 
 BUILTIN_ADAPTERS = [
@@ -31,17 +32,19 @@ BUILTIN_ADAPTERS = [
     Sto9Adapter,
     FanqieAdapter,
 ]
-ADAPTERS = list(BUILTIN_ADAPTERS)
+RULE_ADAPTERS = load_rule_adapter_classes()
+ADAPTERS = list(BUILTIN_ADAPTERS) + list(RULE_ADAPTERS)
 
 USER_ADAPTERS, USER_ADAPTER_ERRORS = load_user_adapters(SiteAdapter)
 ADAPTERS.extend(USER_ADAPTERS)
 
 
 def reload_adapters():
-    """重新掃描 user_adapters，讓 GUI 不必重啟即可套用修改。"""
-    global USER_ADAPTERS, USER_ADAPTER_ERRORS
+    """重新掃描規則資料庫與 user_adapters，讓 GUI 不必重啟即可套用修改。"""
+    global RULE_ADAPTERS, USER_ADAPTERS, USER_ADAPTER_ERRORS
+    RULE_ADAPTERS = load_rule_adapter_classes()
     USER_ADAPTERS, USER_ADAPTER_ERRORS = load_user_adapters(SiteAdapter)
-    ADAPTERS[:] = list(BUILTIN_ADAPTERS) + list(USER_ADAPTERS)
+    ADAPTERS[:] = list(BUILTIN_ADAPTERS) + list(RULE_ADAPTERS) + list(USER_ADAPTERS)
     return ADAPTERS
 
 
