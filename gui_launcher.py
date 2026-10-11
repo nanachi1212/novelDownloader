@@ -29,6 +29,7 @@ if getattr(sys, "frozen", False):
             _dll_handles.append(os.add_dll_directory(str(dll_dir)))
             os.environ["PATH"] = str(dll_dir) + os.pathsep + os.environ.get("PATH", "")
 
+from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import QApplication, QMessageBox
 from app_paths import migration_notice, prepare_app_data
 from app_logging import configure_logging
@@ -36,6 +37,10 @@ from app_logging import configure_logging
 
 def main():
     app = QApplication(sys.argv)
+    icon_root = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent / "packaging"
+    icon_path = icon_root / "assets" / "morandi" / "app-icon.png"
+    if icon_path.is_file():
+        app.setWindowIcon(QIcon(str(icon_path)))
     try:
         prepare_app_data()
         configure_logging()
