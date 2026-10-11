@@ -4,12 +4,16 @@ import os
 from pathlib import Path
 import PyQt6
 
+tomato_exe = Path(SPECPATH) / 'packaging' / 'vendor' / 'tomato' / 'TomatoNovelDownloader.exe'
+tomato_data = [(str(tomato_exe), 'tools/tomato')] if tomato_exe.is_file() else []
+if tomato_data:
+    tomato_data += [(str(tomato_exe.with_name(name)), 'tools/tomato') for name in ('LICENSE', 'NOTICE.txt')]
 
 a = Analysis(
     ['gui_launcher.py'],
     pathex=[],
     binaries=[],
-    datas=[('sites', 'sites')],
+    datas=[('sites', 'sites')] + tomato_data,
     hiddenimports=['curl_cffi', 'browser_cookie3', 'websockets'],
     hookspath=[],
     hooksconfig={},

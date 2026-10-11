@@ -362,6 +362,19 @@ def test_waiting_job_can_be_cancelled_and_a_closed_bridge_never_restarts(tmp_pat
     assert fake.spawns == []
 
 
+def test_bundled_tomato_fallback_preserves_explicit_disable(tmp_path, monkeypatch):
+    monkeypatch.setattr(fb.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(fb.sys, "executable", str(tmp_path / "installation/novelDownloader.exe"))
+    bundled = tmp_path / "installation/tools/tomato/TomatoNovelDownloader.exe"
+    bundled.parent.mkdir(parents=True)
+    bundled.write_bytes(b"MZ")
+    assert fb.load_exe_path() == str(bundled)
+    fb.write_json(fb._settings_path(), {"tomato_exe": str(tmp_path / "missing.exe")})
+    assert fb.load_exe_path() == str(bundled)
+    fb.save_exe_path("")
+    assert fb.configured_provider() is None
+
+
 def test_bridge_rejects_wrong_titles_and_bad_exe(tmp_path, exe):
     fake = FakeTomato(BOOK)
     provider = make_provider(tmp_path, exe, fake)

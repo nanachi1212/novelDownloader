@@ -3,6 +3,7 @@ __pycache__/
 build/
 dist/
 *.exe
+!packaging/vendor/tomato/TomatoNovelDownloader.exe
 .venv/
 *.pyc
 .DS_Store

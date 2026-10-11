@@ -10,6 +10,8 @@ from bs4 import BeautifulSoup
 
 from .base import BookInfo, Chapter
 from .generic import GenericAdapter
+from .fanqie import FanqieAdapter, FanqieError
+from fetcher import Fetcher
 
 
 _FULLWIDTH_DIGITS = str.maketrans("０１２３４５６７８９", "0123456789")
@@ -206,7 +208,48 @@ class RuleAdapter(GenericAdapter):
         )
 
 
-def load_rule_adapter_classes(rules_dir: Path | None = None) -> list[type[RuleAdapter]]:
+class FanqieLinkRuleAdapter(FanqieAdapter):
+    """Resolve a JSON-configured landing page, then use the native reader."""
+
+    adapter_source = "rules"
+
+    def _resolve_url(self, url):
+        if url == getattr(self, "_landing_url", None):
+            return self._resolved_url
+        config = self.rule["url"]
+        if not re.search(config["match_regex"], url, re.I):
+            return url
+        fetcher = Fetcher(headers=self.default_request_headers())
+        try:
+            html = fetcher.get(url, retries=1)
+            self.validate_response(fetcher)
+        finally:
+            fetcher.session.close()
+        soup = BeautifulSoup(html, "lxml")
+        targets = set()
+        for node in soup.select(config["book_link_selector"]):
+            target = urljoin(url, node.get("href", ""))
+            parsed = urlparse(target)
+            if (parsed.scheme in ("http", "https") and parsed.netloc.lower() in self.domains
+                    and re.fullmatch(r"/page/\d+/?", parsed.path)):
+                targets.add("https://fanqienovel.com" + parsed.path.rstrip("/"))
+        if len(targets) != 1:
+            raise FanqieError("番茄關鍵字頁無法確定唯一作品，請貼上作品詳情的 /page/ 書籍網址。")
+        self._landing_url = url
+        self._resolved_url = targets.pop()
+        return self._resolved_url
+
+    def catalog_url(self, url):
+        return super().catalog_url(self._resolve_url(url))
+
+    def meta_url(self, url):
+        return super().meta_url(self._resolve_url(url))
+
+    def book_id(self, url):
+        return super().book_id(self._resolve_url(url))
+
+
+def load_rule_adapter_classes(rules_dir: Path | None = None) -> list[type]:
     rules_dir = rules_dir or Path(__file__).with_name("rules")
     classes = []
     for path in sorted(rules_dir.glob("*.json")):
@@ -218,9 +261,10 @@ def load_rule_adapter_classes(rules_dir: Path | None = None) -> list[type[RuleAd
             if not rule.get("id") or not rule.get("domains"):
                 raise ValueError(f"無效站點規則: {path}")
             class_name = "".join(part.capitalize() for part in rule["id"].split("_")) + "RuleAdapter"
+            base = FanqieLinkRuleAdapter if rule.get("base_adapter") == "fanqie" else RuleAdapter
             cls = type(
                 class_name,
-                (RuleAdapter,),
+                (base,),
                 {
                     "rule": rule,
                     "rule_id": rule["id"],

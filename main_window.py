@@ -693,11 +693,10 @@ class NovelDownloaderUI(QMainWindow):
         box.setWindowTitle("番茄小說：完整正文橋接")
         box.setText(
             "目前設定：" + (current or "未設定") + "\n\n"
-            "番茄 Web 只提供預覽或目錄未標示公開的章節，預設會停止下載。"
-            "若指定你自己下載的 TomatoNovelDownloader EXE，這類章節會改由它在本機 127.0.0.1 取得完整正文，"
-            "再走原本的快取與輸出流程。本程式不內含、不上傳該工具，關閉時只會結束自己啟動的那一個。")
+            "番茄 Web 只提供預覽的章節，會交由內附 Tomato 工具取得完整正文，"
+            "並保留原本的快取與輸出流程。你也可以選擇其他 Tomato EXE，或停用完整正文下載。")
         choose = box.addButton("選擇 EXE…", QMessageBox.ButtonRole.AcceptRole)
-        clear = box.addButton("清除設定", QMessageBox.ButtonRole.DestructiveRole)
+        clear = box.addButton("停用橋接", QMessageBox.ButtonRole.DestructiveRole)
         box.addButton("關閉", QMessageBox.ButtonRole.RejectRole)
         box.exec()
         clicked = box.clickedButton()
@@ -710,7 +709,7 @@ class NovelDownloaderUI(QMainWindow):
                     self.log.append(f"已設定番茄完整正文橋接：{os.path.normpath(path)}")
             elif clicked is clear:
                 save_exe_path("")
-                self.log.append("已清除番茄完整正文橋接設定。")
+                self.log.append("已停用番茄完整正文橋接。")
         except (ProviderError, OSError) as exc:
             QMessageBox.warning(self, "設定失敗", str(exc))
 

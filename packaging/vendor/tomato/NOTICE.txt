@@ -1,0 +1,5 @@
+TomatoNovelDownloader v2.4.15 (Windows x64)
+Source: https://github.com/zhongbai2333/Tomato-Novel-Downloader
+License: MIT; see LICENSE in this directory.
+SHA256: 4e3cdf7890005a9d26615ccfbb7c5daca30a16850fcb6ac48ca1ab209a4eb893
+Used as a local full-text provider via --server; no independent application window is required.

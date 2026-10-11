@@ -1,5 +1,6 @@
 """站點註冊表:依網域選 adapter。新增網站時 import 並加入 ADAPTERS。"""
 from urllib.parse import urlparse
+import re
 
 from adapter_tools import load_user_adapters
 from .shuba69 import Shuba69
@@ -50,6 +51,10 @@ def reload_adapters():
 
 def get_adapter(url: str):
     host = urlparse(url).netloc.lower()
+    for cls in RULE_ADAPTERS:
+        pattern = cls.rule.get("url", {}).get("match_regex")
+        if host in cls.domains and pattern and re.search(pattern, url, re.I):
+            return cls()
     for cls in ADAPTERS:
         if host in cls.domains:
             return cls()

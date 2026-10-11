@@ -1,9 +1,8 @@
 """Optional local full-text providers for Fanqie.
 
 The Fanqie web reader may only expose a preview.  A provider is a local tool the
-user installs and points novelDownloader at; it returns chapter bodies that are
-then cached and written through the normal downloader pipeline.  Nothing from
-any third-party tool is bundled or copied here.
+user installs or includes beside novelDownloader; it returns chapter bodies
+that are cached and written through the normal downloader pipeline.
 
 ``TomatoBridgeProvider`` drives a user-supplied TomatoNovelDownloader EXE
 through its documented ``--server`` HTTP interface.  A future local provider
@@ -17,6 +16,7 @@ import re
 import shutil
 import socket
 import subprocess
+import sys
 import threading
 import time
 import unicodedata
@@ -81,7 +81,15 @@ def _settings_path():
 def load_exe_path():
     data = read_json(_settings_path(), {})
     value = data.get("tomato_exe") if isinstance(data, dict) else None
-    return value.strip() if isinstance(value, str) else ""
+    path = value.strip() if isinstance(value, str) else ""
+    # An explicitly empty setting still disables the bridge.
+    if isinstance(value, str) and not path:
+        return ""
+    if path and Path(path).is_file():
+        return path
+    root = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent
+    bundled = root / "tools" / "tomato" / "TomatoNovelDownloader.exe"
+    return str(bundled) if bundled.is_file() else path
 
 
 def save_exe_path(path):
