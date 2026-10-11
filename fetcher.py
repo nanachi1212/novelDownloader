@@ -6,7 +6,7 @@ import re
 import threading
 import time
 from email.utils import parsedate_to_datetime
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 from curl_cffi import requests
 
@@ -128,6 +128,8 @@ class Fetcher:
                     # a JavaScript redirect. Follow a short, bounded chain in the same session
                     # so cookies, rotating reader domains, and Referer keep working.
                     redirect = JS_REDIRECT.search(text) if len(text) < 10_000 else None
+                    if redirect and urlparse(urljoin(current_url, redirect.group("url"))).scheme not in ("http", "https"):
+                        redirect = None
                     if r.status_code == 200 and redirect:
                         if redirect_count == MAX_JS_REDIRECTS:
                             raise FetchError(

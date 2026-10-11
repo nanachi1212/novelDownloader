@@ -61,6 +61,14 @@ def test_fetcher_uses_configured_timeout():
     assert fetcher.session.calls[0][2] == 47
 
 
+def test_reader_report_button_is_not_a_network_redirect():
+    body = '<div id="content">章節正文</div><script>function openResult(){window.location.href="javascript:report();";}</script>'
+    fetcher = Fetcher()
+    fetcher.session = FakeSession([FakeResponse(body)])
+    assert fetcher.get("https://www.piaotianapp.com/ptchapter/1/2.html") == body
+    assert len(fetcher.session.calls) == 1
+
+
 
 def test_rate_limit_backoff_is_shared_and_does_not_burn_retries(monkeypatch):
     """429 由整本書共用的 Throttle 退避，且不吃掉一般重試次數。"""

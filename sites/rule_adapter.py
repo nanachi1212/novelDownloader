@@ -132,7 +132,7 @@ class RuleAdapter(GenericAdapter):
         seen = set()
         for link in soup.select(selector):
             href = link.get("href")
-            chapter_title = link.get_text(" ", strip=True)
+            chapter_title = link.get_text(" ", strip=True) or (link.get("title") or "").strip()
             if not href or not chapter_title:
                 continue
             chapter_url = urljoin(self._base_url, href)
@@ -195,6 +195,12 @@ class RuleAdapter(GenericAdapter):
         return found
 
     def parse_chapter(self, html: str, title: str = "") -> str:
+        reverse_selector = self.rule.get("content", {}).get("reverse_text_selector")
+        if reverse_selector:
+            soup = BeautifulSoup(html, "lxml")
+            for node in soup.select(reverse_selector):
+                node.string = node.get_text()[::-1]
+            html = str(soup)
         text = super().parse_chapter(html, title)
         patterns = [
             re.compile(pattern)

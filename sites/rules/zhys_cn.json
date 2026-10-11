@@ -1,0 +1,20 @@
+{
+  "id": "zhys_cn",
+  "domains": ["cn.zhys.tw"],
+  "encoding": "utf-8",
+  "max_chapter_workers": 3,
+  "url": {
+    "book_id_regex": "/(?:book|read)/(?P<book_id>\\d+)(?:\\.html|/)",
+    "catalog_template": "https://cn.zhys.tw/book/{book_id}.html",
+    "cache_id_template": "zhys-cn-{book_id}"
+  },
+  "catalog": {
+    "title_selector": "h1",
+    "author_selector": "a[href^='/author/']",
+    "chapter_selector": "#full-catalog .catalog-wrap a[href*='/read/']"
+  },
+  "content": {
+    "selector": "#article-content",
+    "remove_selectors": ["script", "style", "ins", "iframe", "form", "nav"]
+  }
+}

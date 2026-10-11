@@ -1,0 +1,21 @@
+{
+  "id": "piaotianapp",
+  "domains": ["www.piaotianapp.com", "piaotianapp.com"],
+  "encoding": "utf-8",
+  "max_chapter_workers": 2,
+  "url": {
+    "book_id_regex": "/(?:ptinfo|ptchapter)/(?P<book_id>\\d+)(?:\\.html|/)",
+    "catalog_template": "https://www.piaotianapp.com/ptinfo/{book_id}.html",
+    "cache_id_template": "piaotianapp-{book_id}"
+  },
+  "catalog": {
+    "title_selector": "h1",
+    "author_selector": "a[href^='/author/']",
+    "chapter_selector": "#play_0 a[href*='/ptchapter/']"
+  },
+  "content": {
+    "selector": "#content",
+    "remove_selectors": [".m-tpage", ".m-zjaa", "script", "style", "ins", "iframe"],
+    "reverse_text_selector": "#content > p.js-reversed-text"
+  }
+}
