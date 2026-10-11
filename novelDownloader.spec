@@ -1,14 +1,20 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 import os
+from pathlib import Path
+import PyQt6
 
+tomato_exe = Path(SPECPATH) / 'packaging' / 'vendor' / 'tomato' / 'TomatoNovelDownloader.exe'
+tomato_data = [(str(tomato_exe), 'tools/tomato')] if tomato_exe.is_file() else []
+if tomato_data:
+    tomato_data += [(str(tomato_exe.with_name(name)), 'tools/tomato') for name in ('LICENSE', 'NOTICE.txt')]
 
 a = Analysis(
     ['gui_launcher.py'],
     pathex=[],
     binaries=[],
-    datas=[('sites', 'sites')],
-    hiddenimports=['curl_cffi', 'browser_cookie3'],
+    datas=[('sites', 'sites')] + tomato_data,
+    hiddenimports=['curl_cffi', 'browser_cookie3', 'websockets'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -21,10 +27,14 @@ a = Analysis(
 # environments expose Poppler's ICU 78 DLLs on PATH; PyInstaller can collect
 # those by mistake, and they then shadow the compatible Windows ICU DLLs.
 incompatible_icu = {'icuuc.dll', 'icudt78.dll'}
+qt_bin = Path(PyQt6.__file__).resolve().parent / 'Qt6' / 'bin'
 a.binaries = [
     entry for entry in a.binaries
     if os.path.basename(entry[0]).lower() not in incompatible_icu
+    and not os.path.basename(entry[0]).lower().startswith('qt6')
 ]
+for qt_dll in qt_bin.glob('Qt6*.dll'):
+    a.binaries.append((qt_dll.name, str(qt_dll), 'BINARY'))
 pyz = PYZ(a.pure)
 
 exe = EXE(
@@ -36,7 +46,7 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=False,
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
@@ -50,7 +60,7 @@ coll = COLLECT(
     a.binaries,
     a.datas,
     strip=False,
-    upx=True,
+    upx=False,
     upx_exclude=[],
     name='novelDownloader',
 )

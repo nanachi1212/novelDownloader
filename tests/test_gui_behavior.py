@@ -4,9 +4,12 @@ import time
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt6.QtWidgets import QApplication, QSystemTrayIcon
+from PyQt6.QtWidgets import QApplication, QMessageBox, QSystemTrayIcon
 
+from fanqie_preview import FanqiePreviewDialog
+import fanqie_preview
 import main_window
+from sites.fanqie import FanqieChapter
 from state_io import read_json
 
 
@@ -22,9 +25,7 @@ def wait_for_queue(path, expected, timeout=2):
 
 def make_window(monkeypatch, tmp_path):
     app = QApplication.instance() or QApplication([])
-    monkeypatch.setattr(main_window, "__file__", str(tmp_path / "main_window.py"))
-    monkeypatch.setattr(main_window, "get_app_data_dir", lambda: tmp_path)
-    monkeypatch.setattr(main_window, "migrate_legacy_data", lambda: None)
+    monkeypatch.setenv("NOVELDOWNLOADER_DATA_DIR", str(tmp_path))
     monkeypatch.setattr(QSystemTrayIcon, "isSystemTrayAvailable", lambda: False)
 
     window = main_window.NovelDownloaderUI()
@@ -125,3 +126,257 @@ def test_adding_existing_stopped_url_resumes_it(monkeypatch, tmp_path):
         assert "已將停止/失敗的任務恢復為等待" in window.log.toPlainText()
     finally:
         window.close()
+
+
+def test_fanqie_public_chapters_can_be_queued_while_preview_remains_available(monkeypatch, tmp_path):
+    app, window = make_window(monkeypatch, tmp_path)
+    try:
+        assert window.fanqie_preview_btn.text() == "番茄小說：預覽支援"
+        window.url_input.setText("https://fanqienovel.com/page/123456789")
+        window.end_input.setText("3")
+        window.add_btn.click()
+        app.processEvents()
+        assert len(window.jobs) == 1
+        assert window.jobs[0]["end"] == 3
+        assert window.jobs[0]["url"] == "https://fanqienovel.com/page/123456789"
+    finally:
+        window.close()
+
+
+def test_fanqie_preview_dialog_directory_and_selection_controls(monkeypatch, tmp_path):
+    monkeypatch.setenv("NOVELDOWNLOADER_DATA_DIR", str(tmp_path / "profile"))
+    app = QApplication.instance() or QApplication([])
+    dialog = FanqiePreviewDialog("https://fanqienovel.com/page/123456789")
+    try:
+        dialog.book_id = "123456789"
+        dialog.chapters = [
+            FanqieChapter("100", "第一章", "第一卷", 1, {
+                "needPay": 0, "isPaidPublication": False,
+                "isPaidStory": False, "isChapterLock": False,
+            }),
+            FanqieChapter("200", "狀態不明章", "第一卷", 2, {
+                "needPay": 0, "isChapterLock": True,
+            }),
+        ]
+        dialog._populate_directory()
+        assert dialog.tree.topLevelItemCount() == 2
+        assert dialog.tree.topLevelItem(0).text(0) == "第一卷"
+        assert dialog.tree.topLevelItem(0).text(2) == "第一章"
+        assert dialog.tree.topLevelItem(0).text(3).startswith("公開")
+        assert not dialog.tree.topLevelItem(1).isDisabled()
+        assert dialog.raw_state.text() == "原始資料：尚未保存"
+        assert dialog.reader_state.text() == "字型閱讀預覽：不可用（尚未匯入）"
+        assert dialog.text_state.text() == "文字尚未還原"
+        dialog.tree.setCurrentItem(dialog.tree.topLevelItem(0))
+        app.processEvents()
+        assert dialog.save_selected_button.isEnabled()
+        assert not dialog.preview_button.isEnabled()
+        assert dialog.import_reader_button.isEnabled()
+        assert not dialog.reading_preview_button.isEnabled()
+        dialog.tree.setCurrentItem(dialog.tree.topLevelItem(1))
+        app.processEvents()
+        assert not dialog.save_selected_button.isEnabled()
+        assert dialog.original_button.isEnabled()
+        assert not dialog.import_reader_button.isEnabled()
+        assert "視覺預覽不代表文字已還原" in dialog.warning.text()
+    finally:
+        dialog.close()
+
+
+def test_reader_html_import_cancel_keeps_chapter_and_cache_unchanged(monkeypatch, tmp_path):
+    monkeypatch.setenv("NOVELDOWNLOADER_DATA_DIR", str(tmp_path / "profile"))
+    app = QApplication.instance() or QApplication([])
+    dialog = FanqiePreviewDialog("https://fanqienovel.com/page/123456789")
+    try:
+        dialog.book_id = "123456789"
+        dialog.chapters = [FanqieChapter("100", "第一章", "第一卷", 1, {
+            "needPay": 0, "isPaidPublication": False,
+            "isPaidStory": False, "isChapterLock": False,
+        })]
+        dialog._populate_directory()
+        dialog.tree.setCurrentItem(dialog.tree.topLevelItem(0))
+        dialog._choose_reader_source = lambda: ""
+
+        dialog.import_reader_page()
+
+        assert dialog.tree.currentItem().text(2) == "第一章"
+        assert not (dialog.cache_root / "123456789" / "100").exists()
+        assert dialog.import_reader_button.isEnabled()
+        assert not dialog.reading_preview_button.isEnabled()
+    finally:
+        dialog.close()
+
+
+def test_fanqie_selection_validates_font_once(monkeypatch, tmp_path):
+    monkeypatch.setenv("NOVELDOWNLOADER_DATA_DIR", str(tmp_path / "profile"))
+    app = QApplication.instance() or QApplication([])
+    dialog = FanqiePreviewDialog()
+    try:
+        dialog.book_id = "123456789"
+        dialog.chapters = [FanqieChapter("100", "第一章", "第一卷", 1, {
+            "needPay": 0, "isPaidPublication": False,
+            "isPaidStory": False, "isChapterLock": False,
+        })]
+        dialog._populate_directory()
+        dialog.tree.setCurrentItem(dialog.tree.topLevelItem(0))
+        app.processEvents()
+        calls = []
+        monkeypatch.setattr(fanqie_preview, "reading_preview_status",
+                            lambda *args: (calls.append(args) or (True, "ok")))
+        dialog.update_buttons()
+        assert len(calls) == 1
+        assert dialog.reading_preview_button.isEnabled()
+        assert not dialog.import_reader_button.isEnabled()
+    finally:
+        dialog.close()
+
+
+def test_loading_new_fanqie_url_clears_stale_directory(monkeypatch, tmp_path):
+    monkeypatch.setenv("NOVELDOWNLOADER_DATA_DIR", str(tmp_path / "profile"))
+    app = QApplication.instance() or QApplication([])
+    dialog = FanqiePreviewDialog("https://fanqienovel.com/page/123456789")
+    started = []
+    try:
+        dialog.book_id = "123456789"
+        dialog.chapters = [FanqieChapter("100", "第一章", "第一卷", 1, {
+            "needPay": 0, "isPaidPublication": False,
+            "isPaidStory": False, "isChapterLock": False,
+        })]
+        dialog._populate_directory()
+        monkeypatch.setattr(dialog, "_start", lambda worker: started.append(worker))
+        dialog.url_input.setText("https://fanqienovel.com/page/987654321")
+
+        dialog.load_directory()
+
+        assert len(started) == 1 and started[0].mode == "directory"
+        assert dialog.book_id == ""
+        assert dialog.chapters == []
+        assert dialog.tree.topLevelItemCount() == 0
+        assert dialog.info.text().startswith("目錄尚未載入")
+        assert not dialog.save_first_button.isEnabled()
+        assert not dialog.original_button.isEnabled()
+    finally:
+        dialog.close()
+
+
+def test_job_logs_are_separated_per_queue(monkeypatch, tmp_path):
+    app, window = make_window(monkeypatch, tmp_path)
+    try:
+        for url, title in (("https://example.com/book/1", "甲書"),
+                           ("https://example.com/book/2", "乙書")):
+            window.url_input.setText(url)
+            window.title_input.setText(title)
+            window.add_btn.click()
+        app.processEvents()
+        window.add_job_log(0, "[1/10] 第一章")
+        window.add_job_log(1, "[1/20] 第一章")
+        window.add_job_log(0, "[2/10] 第二章")
+        app.processEvents()
+
+        assert window.log_tabs.count() == 3
+        assert window.log_tabs.tabText(1) == "隊列 1｜甲書"
+        assert window.log_tabs.tabText(2) == "隊列 2｜乙書"
+        first = window.log_tabs.widget(1).toPlainText()
+        second = window.log_tabs.widget(2).toPlainText()
+        assert "[1/10] 第一章" in first and "[2/10] 第二章" in first
+        assert "[1/20]" not in first
+        assert second.strip() == "[1/20] 第一章"
+        assert "第一章" not in window.log.toPlainText()
+
+        window.clear_job_logs()
+        app.processEvents()
+        assert window.log_tabs.count() == 1
+    finally:
+        window.close()
+
+
+def test_job_log_tabs_track_title_and_removal(monkeypatch, tmp_path):
+    app, window = make_window(monkeypatch, tmp_path)
+    try:
+        for url in ("https://example.com/book/1", "https://example.com/book/2"):
+            window.url_input.setText(url)
+            window.add_btn.click()
+        app.processEvents()
+        window.add_job_log(0, "《異度旅社》作者: 疊瞳,全書 894 章")
+        window.add_job_log(1, "正在抓取目錄...")
+        app.processEvents()
+        assert window.log_tabs.tabText(1) == "隊列 1｜異度旅社"
+        assert window.log_tabs.tabText(2) == "隊列 2"
+
+        window.queue_list.setCurrentItem(window.queue_list.topLevelItem(0))
+        window.remove_selected()
+        app.processEvents()
+        assert window.log_tabs.count() == 2
+        assert window.log_tabs.tabText(1) == "隊列 1"  # 原隊列 2 重新編號
+    finally:
+        window.close()
+
+
+class FakeCookie:
+    def __init__(self, name, value):
+        self.name = name
+        self.value = value
+
+
+def test_browser_cookie_import_falls_back_to_next_browser():
+    """Chrome 需要管理員權限時，改用下一個瀏覽器，而不是整個失敗。"""
+
+    class FakeModule:
+        @staticmethod
+        def chrome(domain_name):
+            raise RuntimeError("This operation requires admin. Please run as admin.")
+
+        @staticmethod
+        def edge(domain_name):
+            return []
+
+        @staticmethod
+        def firefox(domain_name):
+            return [FakeCookie("cf_clearance", "abc"), FakeCookie("sid", "1")]
+
+    label, header, problems = main_window.read_browser_cookies("69shuba.tw", FakeModule)
+    assert label == "Firefox"
+    assert header == "cf_clearance=abc; sid=1"
+    assert problems[0] == "Chrome：新版 Chrome/Edge 的 Cookie 加密需要系統管理員權限"
+    assert problems[1] == "Edge：沒有此網域的 Cookie"
+
+
+def test_browser_cookie_import_reports_every_reason_when_all_fail():
+    class FakeModule:
+        @staticmethod
+        def chrome(domain_name):
+            raise RuntimeError("This operation requires admin. Please run as admin.")
+
+        @staticmethod
+        def firefox(domain_name):
+            raise RuntimeError("Could not find Firefox profile directory")
+
+    label, header, problems = main_window.read_browser_cookies("69shuba.tw", FakeModule)
+    assert (label, header) == ("", "")
+    assert problems == [
+        "Chrome：新版 Chrome/Edge 的 Cookie 加密需要系統管理員權限",
+        "Firefox：沒有安裝或找不到設定檔",
+    ]
+
+
+def test_cookie_header_only_keeps_matching_domain():
+    from chrome_cookies import cookies_to_header
+
+    cookies = [
+        {"domain": ".69shuba.tw", "name": "cf_clearance", "value": "abc"},
+        {"domain": "69shuba.tw", "name": "sid", "value": "1"},
+        {"domain": ".other.com", "name": "ad", "value": "x"},
+    ]
+    assert cookies_to_header(cookies, "69shuba.tw") == "cf_clearance=abc; sid=1"
+    assert cookies_to_header(cookies, "www.69shuba.tw") == "cf_clearance=abc; sid=1"
+    assert cookies_to_header(cookies, "other.com") == "ad=x"
+    assert cookies_to_header(cookies, "example.test") == ""
+
+
+def test_fanqie_bridge_button_exists_and_closing_stops_our_bridge(monkeypatch, tmp_path):
+    app, window = make_window(monkeypatch, tmp_path)
+    stopped = []
+    monkeypatch.setattr(main_window, "shutdown_providers", lambda: stopped.append(True))
+    assert window.fanqie_bridge_btn.text() == "番茄小說：完整正文橋接"
+    window.close()
+    assert stopped == [True]

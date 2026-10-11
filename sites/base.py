@@ -1,11 +1,12 @@
 """站點 adapter 介面。新增網站時繼承 SiteAdapter 並在 sites/__init__.py 註冊。"""
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass
 class Chapter:
     title: str
     url: str
+    extra_urls: list = field(default_factory=list)  # 目錄把同一章拆成多個項目時，其餘網址
 
 
 @dataclass
@@ -19,6 +20,12 @@ class SiteAdapter:
     domains: list = []      # 可處理的網域,例如 ["69shuba.com", "www.69shuba.com"]
     encoding: str = "utf-8"
     max_chapter_workers: int = 8  # 受 Session／反爬限制的網站可降為 1
+    supports_full_text_provider: bool = False  # True 時可搭配 fanqie_bridge 這類本機完整正文 provider
+    full_text_provider_active: bool = False    # 本次下載實際有 provider(由 download_novel 設定)
+
+    def default_request_headers(self) -> dict[str, str]:
+        """Site-specific public request headers; callers may override them."""
+        return {}
 
     def catalog_url(self, url: str) -> str:
         """把使用者貼的網址(簡介頁/目錄頁)正規化成目錄頁網址。"""
@@ -39,8 +46,63 @@ class SiteAdapter:
     def parse_catalog(self, html: str) -> BookInfo:
         raise NotImplementedError
 
+    def full_catalog_url(self, html: str, url: str):
+        """目錄頁是摺疊的(需「展開全部／查看全部章節」才有完整清單)時,
+        回傳完整目錄的網址;預設回傳 None 表示目錄頁本身已完整。
+        """
+        return None
+
+    def catalog_page_urls(self, html: str, url: str) -> list:
+        """目錄分成多頁時,回傳「目前頁以外」其餘分頁的網址(依序);
+        預設回傳空列表表示目錄只有一頁。
+        """
+        return []
+
+    def parse_catalog_page(self, html: str, url: str) -> BookInfo:
+        """解析目錄的其中一個分頁;預設等同 parse_catalog。"""
+        return self.parse_catalog(html)
+
     def parse_chapter(self, html: str, title: str = "") -> str:
         """回傳過濾廣告後的乾淨內文。title 用於去除內文開頭重複的章節標題。"""
+        raise NotImplementedError
+
+    def validate_download_chapter(self, chapter: Chapter) -> None:
+        """Reject a chapter before cache reuse or network access when needed."""
+
+    def validate_response(self, fetcher) -> None:
+        """Reject a response that signals a site access gate, including HTTP 200."""
+
+    def validate_fetch_error(self, error: Exception) -> None:
+        """Reject a site-specific access gate reported by the fetch layer."""
+
+    def chapter_cache_filename(self, chapter: Chapter, index: int) -> str:
+        """Name a chapter cache entry; sites with stable IDs may override it."""
+        return f"{index:04d}.txt"
+
+    def restore_cache_state(self, cache) -> None:
+        """Restore optional adapter state before cached chapters are reused."""
+
+    def save_cache_state(self, cache) -> None:
+        """Persist optional adapter state before a parsed chapter is cached."""
+
+    def retryable_parse_error(self, error: Exception) -> bool:
+        """Identify site parser errors eligible for the chapter retry loop."""
+        return False
+
+    def default_full_text_provider(self):
+        """supports_full_text_provider 的網站:回傳使用者設定的 provider,未設定回傳 None。"""
+        return None
+
+    def prefers_full_text_provider(self, chapter: Chapter) -> bool:
+        """Web 來源不會提供這章完整正文時回傳 True,改由 provider 取得。"""
+        return False
+
+    def is_preview_only_error(self, error: Exception) -> bool:
+        """parse_chapter 拋出的錯誤是否代表「Web 只有預覽」。"""
+        return False
+
+    def provider_items(self, chapter: Chapter) -> list:
+        """交給 provider 的章節項目(fanqie_bridge.ProviderChapter 列表)。"""
         raise NotImplementedError
 
     def chapter_source_url(self, html: str, url: str):

@@ -1,5 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+import os
+
 
 a = Analysis(
     ['gui_launcher.py'],
@@ -14,6 +16,14 @@ a = Analysis(
     noarchive=False,
     optimize=0,
 )
+
+# Keep the same Qt/Windows ICU exclusion as novelDownloader.spec. Otherwise
+# libraries from a build tool on PATH can shadow the Windows ICU API.
+incompatible_icu = {'icuuc.dll', 'icudt78.dll'}
+a.binaries = [
+    entry for entry in a.binaries
+    if os.path.basename(entry[0]).lower() not in incompatible_icu
+]
 pyz = PYZ(a.pure)
 
 exe = EXE(
@@ -26,7 +36,7 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=False,
     upx_exclude=[],
     runtime_tmpdir=None,
     console=False,

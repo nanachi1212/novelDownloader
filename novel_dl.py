@@ -11,14 +11,13 @@ import argparse
 import sys
 from pathlib import Path
 
-from downloader_task import download_novel
 from app_logging import configure_logging
+from app_paths import ApplicationDataError, migration_notice, prepare_app_data
 
 DEFAULT_OUT_DIR = Path(__file__).resolve().parent.parent
 
 
 def main():
-    configure_logging()
     parser = argparse.ArgumentParser(description="小說下載器(自動過濾廣告)")
     parser.add_argument("url", help="小說目錄頁或簡介頁網址")
     parser.add_argument("--out", help="輸出資料夾(預設: 上層目錄)")
@@ -32,6 +31,12 @@ def main():
     parser.add_argument("--limit", type=int, help="只下載前 N 章(測試用,等同 --end N)")
     parser.add_argument("--title", help="覆寫書名(輸出檔名也會用它)")
     args = parser.parse_args()
+    prepare_app_data()
+    configure_logging()
+    notice = migration_notice()
+    if notice:
+        print(notice, file=sys.stderr)
+    from downloader_task import download_novel
 
     end = args.end
     if args.limit and not end:
@@ -64,4 +69,7 @@ if __name__ == "__main__":
         main()
     except KeyboardInterrupt:
         print("\n已中斷。重跑同一指令會從快取續傳,不會重抓已完成的章節。")
+        sys.exit(1)
+    except ApplicationDataError as exc:
+        print(str(exc), file=sys.stderr)
         sys.exit(1)

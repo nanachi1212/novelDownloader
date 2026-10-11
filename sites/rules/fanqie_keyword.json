@@ -1,0 +1,9 @@
+{
+  "id": "fanqie_keyword",
+  "base_adapter": "fanqie",
+  "domains": ["fanqienovel.com", "www.fanqienovel.com"],
+  "url": {
+    "match_regex": "^https?://(?:www\\.)?fanqienovel\\.com/keyword/\\d+/?(?:[?#].*)?$",
+    "book_link_selector": ".book-detail a.book-title[href]"
+  }
+}

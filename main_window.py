@@ -1,4 +1,5 @@
 """PyQt6 圖形界面:下載隊列、章節範圍、儲存位置、書名編輯、進度與日誌。"""
+import os
 import sys
 import threading
 import json
@@ -9,7 +10,6 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from urllib.parse import urlparse, urlunparse
 
-from app_dirs import get_app_data_dir, migrate_legacy_data
 from PyQt6.QtWidgets import (
     QApplication,
     QMainWindow,
@@ -21,6 +21,7 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QProgressBar,
     QTextEdit,
+    QTabWidget,
     QTreeWidget,
     QTreeWidgetItem,
     QMenu,
@@ -46,12 +47,16 @@ from adapter_tools import (
     adapter_is_enabled,
     disable_adapter,
 )
+from chrome_cookies import ChromeCookieSession
 from textfilter import ensure_rules_file, rules_path
 from state_io import LatestJsonWriter, read_json, write_json
+from app_paths import prepare_app_data
 from PyQt6.QtWidgets import QComboBox
 from sites import ADAPTERS, USER_ADAPTER_ERRORS, get_adapter, reload_adapters
+from fanqie_bridge import ProviderError, load_exe_path, save_exe_path, shutdown_providers
+from fanqie_preview import FanqiePreviewDialog
 
-APP_VERSION = "1.6.6"
+APP_VERSION = "1.6.8"
 
 STATUS_LABEL = {
     "pending": "⏳ 等待",
@@ -87,6 +92,40 @@ def queue_url_key(url: str) -> str:
         netloc = f"{host}:{port}"
     path = parsed.path.rstrip("/") or "/"
     return urlunparse((parsed.scheme.lower(), netloc, path, "", parsed.query, ""))
+
+
+COOKIE_BROWSERS = ("chrome", "edge", "firefox", "brave", "chromium", "opera")
+COOKIE_BROWSER_LABEL = {"chrome": "Chrome", "edge": "Edge", "firefox": "Firefox",
+                        "brave": "Brave", "chromium": "Chromium", "opera": "Opera"}
+
+
+def cookie_error_hint(error) -> str:
+    text = str(error)
+    if "requires admin" in text.lower():
+        return "新版 Chrome/Edge 的 Cookie 加密需要系統管理員權限"
+    if "profile" in text.lower() or "failed to find" in text.lower():
+        return "沒有安裝或找不到設定檔"
+    return text
+
+
+def read_browser_cookies(host, module):
+    """依序嘗試各瀏覽器，回傳 (瀏覽器名稱, Cookie header, 失敗原因清單)。"""
+    problems = []
+    for name in COOKIE_BROWSERS:
+        reader = getattr(module, name, None)
+        if reader is None:
+            continue
+        label = COOKIE_BROWSER_LABEL.get(name, name)
+        try:
+            header = "; ".join(f"{c.name}={c.value}" for c in reader(domain_name=host))
+        except Exception as exc:
+            problems.append(f"{label}：{cookie_error_hint(exc)}")
+            continue
+        if not header:
+            problems.append(f"{label}：沒有此網域的 Cookie")
+            continue
+        return label, header, problems
+    return "", "", problems
 
 
 def classify_download_error(error) -> str:
@@ -276,10 +315,8 @@ class QueueThread(QThread):
                         self.sig_stats.emit(row, current, total)
                         if current == 1 or current == total or current % 10 == 0:
                             self.sig_job_log.emit(row, msg)
-                            self.sig_log.emit(f"[{prefix}] {msg}")
                     else:
                         self.sig_job_log.emit(row, msg)
-                        self.sig_log.emit(f"[{prefix}] {msg}")
 
                 job_delay = float(self.site_settings.get(job.get("site_key", ""), {}).get(
                     "delay", self.delay))
@@ -386,13 +423,10 @@ class NovelDownloaderUI(QMainWindow):
         self.thread = None
         self.stats_started = 0.0
         self.chapter_progress = {}
-
-        migrate_legacy_data()
-        app_data_dir = get_app_data_dir()
-        self.queue_file = app_data_dir / "queue.json"
-        self.preferences_file = app_data_dir / "preferences.json"
-        self.site_settings_file = app_data_dir / "site_settings.json"
-        self.history_file = app_data_dir / "history.json"
+        self.queue_file = prepare_app_data() / "queue.json"
+        self.preferences_file = self.queue_file.parent / "preferences.json"
+        self.site_settings_file = self.queue_file.parent / "site_settings.json"
+        self.history_file = self.queue_file.parent / "history.json"
         self.queue_writer = LatestJsonWriter()
         self.progress_updates = ProgressUpdateCoalescer(parent=self)
         self.progress_updates.flushed.connect(self.render_progress_updates)
@@ -416,6 +450,14 @@ class NovelDownloaderUI(QMainWindow):
         paste_btn.setMaximumWidth(50)
         paste_btn.clicked.connect(self.paste_from_clipboard)
         url_layout.addWidget(paste_btn)
+        self.fanqie_preview_btn = QPushButton("番茄小說：預覽支援")
+        self.fanqie_preview_btn.setObjectName("fanqiePreviewButton")
+        self.fanqie_preview_btn.clicked.connect(self.open_fanqie_preview)
+        url_layout.addWidget(self.fanqie_preview_btn)
+        self.fanqie_bridge_btn = QPushButton("番茄小說：完整正文橋接")
+        self.fanqie_bridge_btn.setObjectName("fanqieBridgeButton")
+        self.fanqie_bridge_btn.clicked.connect(self.open_fanqie_bridge_settings)
+        url_layout.addWidget(self.fanqie_bridge_btn)
         layout.addLayout(url_layout)
 
         # --- 選項行（更緊湊） ---
@@ -603,10 +645,15 @@ class NovelDownloaderUI(QMainWindow):
         layout.addWidget(self.progress_info)
         log_font = QFont("Courier")
         log_font.setPointSize(9)
+        self.log_font = log_font
+        self.log_tabs = QTabWidget()
         self.log = QTextEdit()
         self.log.setReadOnly(True)
         self.log.setFont(log_font)
-        layout.addWidget(self.log)
+        self.log_tabs.addTab(self.log, "總覽")
+        self.job_logs = {}  # job id -> QTextEdit
+        self.job_log_titles = {}  # job id -> 抓到目錄後得到的書名（僅供分頁標題顯示）
+        layout.addWidget(self.log_tabs)
 
         # --- 控制 ---
         ctrl_layout = QHBoxLayout()
@@ -635,6 +682,36 @@ class NovelDownloaderUI(QMainWindow):
             self.url_input.setText(text)
         else:
             QMessageBox.warning(self, "提示", "剪貼板是空的")
+
+    def open_fanqie_preview(self):
+        FanqiePreviewDialog(self.url_input.text().strip(), self).exec()
+
+    def open_fanqie_bridge_settings(self):
+        """指定（或清除）選用的 TomatoNovelDownloader EXE。"""
+        current = load_exe_path()
+        box = QMessageBox(self)
+        box.setWindowTitle("番茄小說：完整正文橋接")
+        box.setText(
+            "目前設定：" + (current or "未設定") + "\n\n"
+            "番茄 Web 只提供預覽的章節，會交由內附 Tomato 工具取得完整正文，"
+            "並保留原本的快取與輸出流程。你也可以選擇其他 Tomato EXE，或停用完整正文下載。")
+        choose = box.addButton("選擇 EXE…", QMessageBox.ButtonRole.AcceptRole)
+        clear = box.addButton("停用橋接", QMessageBox.ButtonRole.DestructiveRole)
+        box.addButton("關閉", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        clicked = box.clickedButton()
+        try:
+            if clicked is choose:
+                path, _ = QFileDialog.getOpenFileName(
+                    self, "選擇 TomatoNovelDownloader EXE", current or str(Path.home()), "程式 (*.exe)")
+                if path:
+                    save_exe_path(os.path.normpath(path))
+                    self.log.append(f"已設定番茄完整正文橋接：{os.path.normpath(path)}")
+            elif clicked is clear:
+                save_exe_path("")
+                self.log.append("已停用番茄完整正文橋接。")
+        except (ProviderError, OSError) as exc:
+            QMessageBox.warning(self, "設定失敗", str(exc))
 
     def job_text(self, job):
         rng = f"第{job['start'] or 1}~{job['end'] or '末'}章" if (job["start"] or job["end"]) else "全書"
@@ -669,6 +746,12 @@ class NovelDownloaderUI(QMainWindow):
         url = self.url_input.text().strip()
         if not url:
             QMessageBox.warning(self, "輸入不完整", "請輸入目錄頁 URL")
+            return
+        if getattr(get_adapter(url), "preview_only", False):
+            QMessageBox.information(
+                self, "番茄小說預覽模式",
+                "番茄小說目前只支援目錄與原始資料 Preview，不能加入 TXT／EPUB 下載隊列。請使用「番茄小說：預覽支援」。",
+            )
             return
         url_key = queue_url_key(url)
         duplicate = next((job for job in self.jobs
@@ -732,6 +815,7 @@ class NovelDownloaderUI(QMainWindow):
         for row in reversed(rows):
             self.jobs.pop(row)
             self.queue_list.takeTopLevelItem(row)
+        self.prune_job_logs()
         self.save_queue()
 
     def selected_row(self):
@@ -817,6 +901,7 @@ class NovelDownloaderUI(QMainWindow):
         for row in reversed(rows):
             self.jobs.pop(row)
             self.queue_list.takeTopLevelItem(row)
+        self.prune_job_logs()
         if rows:
             self.log.append(f"已移除 {len(rows)} 個完成任務。")
 
@@ -826,6 +911,7 @@ class NovelDownloaderUI(QMainWindow):
         for row in reversed(rows):
             self.jobs.pop(row)
             self.queue_list.takeTopLevelItem(row)
+        self.prune_job_logs()
 
     def refresh_row(self, row, status):
         self.jobs[row]["status"] = status
@@ -895,7 +981,66 @@ class NovelDownloaderUI(QMainWindow):
             self.tray.showMessage(title, message, QSystemTrayIcon.MessageIcon.Information, 5000)
         QApplication.beep()
 
+    def job_log_view(self, row):
+        """取得(必要時建立)該隊列項目專用的日誌分頁，避免多本書的進度混在一起。"""
+        if not 0 <= row < len(self.jobs):
+            return None
+        job = self.jobs[row]
+        job.setdefault("id", uuid.uuid4().hex)
+        view = self.job_logs.get(job["id"])
+        label = self.job_log_label(row, job)
+        if view is None:
+            view = QTextEdit()
+            view.setReadOnly(True)
+            view.setFont(self.log_font)
+            view.document().setMaximumBlockCount(2000)  # 長篇小說時避免日誌無限增長
+            self.job_logs[job["id"]] = view
+            self.log_tabs.addTab(view, label)
+        else:
+            index = self.log_tabs.indexOf(view)
+            if index >= 0 and self.log_tabs.tabText(index) != label:
+                self.log_tabs.setTabText(index, label)
+        return view
+
+    def job_log_label(self, row, job):
+        title = job["title"] or self.job_log_titles.get(job.get("id"), "")
+        return f"隊列 {row + 1}｜{title}" if title else f"隊列 {row + 1}"
+
+    def prune_job_logs(self):
+        """移除已不存在的任務分頁，並讓剩下的分頁標題重新對齊隊列編號。"""
+        alive = {job.get("id") for job in self.jobs}
+        for job_id in [key for key in self.job_logs if key not in alive]:
+            view = self.job_logs.pop(job_id)
+            index = self.log_tabs.indexOf(view)
+            if index >= 0:
+                self.log_tabs.removeTab(index)
+            view.deleteLater()
+        for row, job in enumerate(self.jobs):
+            view = self.job_logs.get(job.get("id"))
+            if view is None:
+                continue
+            index = self.log_tabs.indexOf(view)
+            label = self.job_log_label(row, job)
+            if index >= 0 and self.log_tabs.tabText(index) != label:
+                self.log_tabs.setTabText(index, label)
+
+    def clear_job_logs(self):
+        for view in self.job_logs.values():
+            index = self.log_tabs.indexOf(view)
+            if index >= 0:
+                self.log_tabs.removeTab(index)
+            view.deleteLater()
+        self.job_logs.clear()
+        self.job_log_titles.clear()
+
     def add_job_log(self, row, msg):
+        if msg.startswith("《") and "》" in msg and 0 <= row < len(self.jobs):
+            job_id = self.jobs[row].get("id")
+            if job_id and job_id not in self.job_log_titles:
+                self.job_log_titles[job_id] = msg[1:msg.index("》")]
+        view = self.job_log_view(row)
+        if view is not None:
+            view.append(msg)
         item = self.job_item(row)
         if not item:
             return
@@ -1233,6 +1378,7 @@ class NovelDownloaderUI(QMainWindow):
         self.progress_updates.reset()
         self.chapter_progress = {}
         self.stats_started = time.monotonic()
+        self.clear_job_logs()
         workers = self.concurrent_input.value()
         site_workers = self.site_concurrent_input.value()
         retries = self.retry_input.value()
@@ -1298,6 +1444,7 @@ class NovelDownloaderUI(QMainWindow):
         self.queue_writer.submit(self.queue_file, serialize_queue_jobs(self.jobs))
 
     def closeEvent(self, event):
+        shutdown_providers()
         self.queue_writer.close(timeout=2)
         super().closeEvent(event)
 
@@ -1357,9 +1504,11 @@ class NovelDownloaderUI(QMainWindow):
     def edit_cookies(self):
         dlg = QDialog(self)
         dlg.setWindowTitle("Cookie 匯入（本次執行有效）")
-        dlg.resize(620, 280)
+        dlg.resize(620, 320)
         v = QVBoxLayout()
-        v.addWidget(QLabel("輸入網站網域；可從 Chrome 讀取 Cookie，或手動貼上 Cookie header。Cookie 不會寫入檔案。"))
+        v.addWidget(QLabel(
+            "遇到人機驗證的網站：輸入網域 → ① 開啟驗證視窗 → 在該視窗完成驗證 → ② 取得並套用 Cookie。\n"
+            "Cookie 只留在記憶體，不會寫入檔案，本次執行有效。"))
         form = QHBoxLayout()
         form.addWidget(QLabel("網域:"))
         domain = QLineEdit()
@@ -1370,30 +1519,40 @@ class NovelDownloaderUI(QMainWindow):
         editor.setPlaceholderText("name=value; name2=value2")
         v.addWidget(editor)
         info = QLabel("")
+        info.setWordWrap(True)
         v.addWidget(info)
         buttons = QHBoxLayout()
-        browser_btn = QPushButton("匯入 Chrome Cookie")
-        open_btn = QPushButton("開啟瀏覽器")
+        verify_btn = QPushButton("① 開啟驗證視窗")
+        verify_btn.setToolTip("開一個獨立的瀏覽器視窗；在裡面完成人機驗證後按下一步")
+        grab_btn = QPushButton("② 取得並套用 Cookie")
+        grab_btn.setToolTip("從驗證視窗抓回 Cookie，不需要 F12，也不需要系統管理員權限")
+        browser_btn = QPushButton("匯入瀏覽器 Cookie")
         save_btn = QPushButton("套用")
         close_btn = QPushButton("關閉")
-        buttons.addWidget(browser_btn); buttons.addWidget(open_btn); buttons.addWidget(save_btn); buttons.addStretch(); buttons.addWidget(close_btn)
+        for btn in (verify_btn, grab_btn, browser_btn, save_btn):
+            buttons.addWidget(btn)
+        buttons.addStretch(); buttons.addWidget(close_btn)
         v.addLayout(buttons)
 
-        def import_chrome():
+        def import_cookies():
             host = domain.text().strip()
             if not host:
                 info.setText("請先輸入網域")
                 return
             try:
                 import browser_cookie3
-                cookies = browser_cookie3.chrome(domain_name=host)
-                header = "; ".join(f"{cookie.name}={cookie.value}" for cookie in cookies)
-                if not header:
-                    raise RuntimeError("Chrome 找不到此網域的 Cookie")
+            except ImportError:
+                info.setText("找不到 browser_cookie3，請改用手動貼上 Cookie")
+                return
+            label, header, problems = read_browser_cookies(host, browser_cookie3)
+            if header:
                 editor.setPlainText(header)
-                info.setText(f"已讀取 {len(header.split('; '))} 個 Cookie；按套用後本次下載有效")
-            except Exception as exc:
-                info.setText(f"讀取失敗：{exc}")
+                info.setText(f"已從 {label} 讀取 {len(header.split('; '))} 個 Cookie；"
+                             "按套用後本次下載有效")
+                return
+            info.setText("讀取失敗：" + "；".join(problems) + "\n"
+                         "手動作法：瀏覽器按 F12 →「網路 Network」→ 重新整理頁面 → 點任一請求 →"
+                         " Request Headers → 複製整行 Cookie 貼到上方欄位。")
 
         def apply_cookie():
             host = domain.text().strip().lower()
@@ -1404,15 +1563,46 @@ class NovelDownloaderUI(QMainWindow):
             self.site_cookies[host] = value
             info.setText(f"已套用 {host} Cookie")
 
-        def open_browser():
-            host = domain.text().strip()
-            if host:
-                QDesktopServices.openUrl(QUrl("https://" + host))
+        session = ChromeCookieSession()
 
-        browser_btn.clicked.connect(import_chrome)
-        open_btn.clicked.connect(open_browser)
+        def open_verify_window():
+            host = domain.text().strip()
+            if not host:
+                info.setText("請先輸入網域")
+                return
+            info.setText("正在開啟驗證視窗...")
+            QApplication.processEvents()
+            try:
+                session.open("https://" + host)
+            except Exception as exc:
+                info.setText(f"開啟失敗：{exc}")
+                return
+            info.setText("請在新開的瀏覽器視窗完成人機驗證，看到小說頁面後，回來按「② 取得並套用 Cookie」。")
+
+        def grab_cookies():
+            host = domain.text().strip().lower()
+            if not host:
+                info.setText("請先輸入網域")
+                return
+            try:
+                header = session.cookie_header(host)
+            except Exception as exc:
+                info.setText(f"取得失敗：{exc}")
+                return
+            if not header:
+                info.setText(f"驗證視窗裡還沒有 {host} 的 Cookie；請先在該視窗打開網站並完成驗證。")
+                return
+            editor.setPlainText(header)
+            self.site_cookies[host] = header
+            info.setText(f"已取得並套用 {len(header.split('; '))} 個 Cookie（本次執行有效），"
+                         "可以關閉這個視窗開始下載。")
+
+        verify_btn.clicked.connect(open_verify_window)
+        grab_btn.clicked.connect(grab_cookies)
+        browser_btn.clicked.connect(import_cookies)
         save_btn.clicked.connect(apply_cookie)
         close_btn.clicked.connect(dlg.accept)
+        dlg.finished.connect(lambda _result: session.close())
         dlg.setLayout(v)
         dlg.exec()
 

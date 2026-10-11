@@ -1,5 +1,6 @@
 """站點註冊表:依網域選 adapter。新增網站時 import 並加入 ADAPTERS。"""
 from urllib.parse import urlparse
+import re
 
 from adapter_tools import load_user_adapters
 from .shuba69 import Shuba69
@@ -13,6 +14,9 @@ from .book8 import Book8Adapter
 from .twkan import TwkanAdapter
 from .novels_com_tw import NovelsComTwAdapter
 from .zhys import ZhysAdapter
+from .sto9 import Sto9Adapter
+from .fanqie import FanqieAdapter
+from .rule_adapter import load_rule_adapter_classes
 from .base import SiteAdapter
 
 BUILTIN_ADAPTERS = [
@@ -26,23 +30,31 @@ BUILTIN_ADAPTERS = [
     TwkanAdapter,
     NovelsComTwAdapter,
     ZhysAdapter,
+    Sto9Adapter,
+    FanqieAdapter,
 ]
-ADAPTERS = list(BUILTIN_ADAPTERS)
+RULE_ADAPTERS = load_rule_adapter_classes()
+ADAPTERS = list(BUILTIN_ADAPTERS) + list(RULE_ADAPTERS)
 
 USER_ADAPTERS, USER_ADAPTER_ERRORS = load_user_adapters(SiteAdapter)
 ADAPTERS.extend(USER_ADAPTERS)
 
 
 def reload_adapters():
-    """重新掃描 user_adapters，讓 GUI 不必重啟即可套用修改。"""
-    global USER_ADAPTERS, USER_ADAPTER_ERRORS
+    """重新掃描規則資料庫與 user_adapters，讓 GUI 不必重啟即可套用修改。"""
+    global RULE_ADAPTERS, USER_ADAPTERS, USER_ADAPTER_ERRORS
+    RULE_ADAPTERS = load_rule_adapter_classes()
     USER_ADAPTERS, USER_ADAPTER_ERRORS = load_user_adapters(SiteAdapter)
-    ADAPTERS[:] = list(BUILTIN_ADAPTERS) + list(USER_ADAPTERS)
+    ADAPTERS[:] = list(BUILTIN_ADAPTERS) + list(RULE_ADAPTERS) + list(USER_ADAPTERS)
     return ADAPTERS
 
 
 def get_adapter(url: str):
     host = urlparse(url).netloc.lower()
+    for cls in RULE_ADAPTERS:
+        pattern = cls.rule.get("url", {}).get("match_regex")
+        if host in cls.domains and pattern and re.search(pattern, url, re.I):
+            return cls()
     for cls in ADAPTERS:
         if host in cls.domains:
             return cls()

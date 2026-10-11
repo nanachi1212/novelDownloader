@@ -5,11 +5,13 @@ from pathlib import Path
 from unittest import mock
 
 import app_dirs
+import app_paths
 
 
 def test_get_app_data_dir_windows(monkeypatch):
     monkeypatch.setattr(sys, "platform", "win32")
-    monkeypatch.setattr(os, "environ", {"LOCALAPPDATA": "C:\\Users\\test\\AppData\\Local"})
+    monkeypatch.delenv(app_paths.DATA_DIR_ENV)
+    monkeypatch.setenv("LOCALAPPDATA", "C:\\Users\\test\\AppData\\Local")
 
     expected = Path("C:\\Users\\test\\AppData\\Local") / "novelDownloader"
     assert app_dirs.get_app_data_dir() == expected
@@ -17,14 +19,17 @@ def test_get_app_data_dir_windows(monkeypatch):
 
 def test_get_app_data_dir_windows_fallback(monkeypatch):
     monkeypatch.setattr(sys, "platform", "win32")
-    monkeypatch.setattr(os, "environ", {})
+    monkeypatch.delenv(app_paths.DATA_DIR_ENV)
+    monkeypatch.delenv("LOCALAPPDATA", raising=False)
     monkeypatch.setattr(Path, "home", lambda: Path("C:\\Users\\test"))
+    monkeypatch.setattr(app_paths, "_windows_local_data", lambda home: home / "AppData" / "Local")
 
     expected = Path("C:\\Users\\test") / "AppData" / "Local" / "novelDownloader"
     assert app_dirs.get_app_data_dir() == expected
 
 
 def test_get_app_data_dir_darwin(monkeypatch):
+    monkeypatch.delenv(app_paths.DATA_DIR_ENV)
     monkeypatch.setattr(sys, "platform", "darwin")
     monkeypatch.setattr(Path, "home", lambda: Path("/Users/test"))
 
@@ -34,18 +39,20 @@ def test_get_app_data_dir_darwin(monkeypatch):
 
 def test_get_app_data_dir_linux(monkeypatch):
     monkeypatch.setattr(sys, "platform", "linux")
-    monkeypatch.setattr(os, "environ", {})
+    monkeypatch.delenv(app_paths.DATA_DIR_ENV)
+    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
     monkeypatch.setattr(Path, "home", lambda: Path("/home/test"))
 
     expected = Path("/home/test/.local/share/novelDownloader")
     assert app_dirs.get_app_data_dir() == expected
 
 
-def test_get_app_data_dir_linux_xdg(monkeypatch):
+def test_get_app_data_dir_linux_xdg(monkeypatch, tmp_path):
     monkeypatch.setattr(sys, "platform", "linux")
-    monkeypatch.setattr(os, "environ", {"XDG_DATA_HOME": "/home/test/.config_custom"})
+    monkeypatch.delenv(app_paths.DATA_DIR_ENV)
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / ".config_custom"))
 
-    expected = Path("/home/test/.config_custom/novelDownloader")
+    expected = tmp_path / ".config_custom" / "novelDownloader"
     assert app_dirs.get_app_data_dir() == expected
 
 
@@ -56,8 +63,8 @@ def test_migrate_legacy_data_safe(tmp_path, monkeypatch):
     legacy_dir.mkdir()
 
     # Create some legacy files
-    (legacy_dir / "queue.json").write_text("old_queue", encoding="utf-8")
-    (legacy_dir / "history.json").write_text("old_history", encoding="utf-8")
+    (legacy_dir / "queue.json").write_text('["old_queue"]', encoding="utf-8")
+    (legacy_dir / "history.json").write_text('["old_history"]', encoding="utf-8")
 
     legacy_cache = legacy_dir / "cache"
     legacy_cache.mkdir()
@@ -69,22 +76,24 @@ def test_migrate_legacy_data_safe(tmp_path, monkeypatch):
 
     # Mock paths
     monkeypatch.setattr(sys, "frozen", False, raising=False)
-    monkeypatch.setattr(app_dirs, "__file__", str(legacy_dir / "app_dirs.py"))
-    monkeypatch.setattr(app_dirs, "__file__", str(legacy_dir / "app_dirs.py"))
-    monkeypatch.setattr(app_dirs, "get_app_data_dir", lambda: new_dir)
+    monkeypatch.delenv(app_paths.DATA_DIR_ENV)
+    monkeypatch.setattr(app_paths, "legacy_app_dir", lambda: legacy_dir)
+    monkeypatch.setattr(app_paths, "app_data_dir", lambda: new_dir)
 
     # Run migration
     app_dirs.migrate_legacy_data()
 
     # Check that new directory has the data
-    assert (new_dir / "queue.json").read_text(encoding="utf-8") == "old_queue"
-    assert (new_dir / "history.json").read_text(encoding="utf-8") == "old_history"
+    assert (new_dir / "queue.json").read_text(encoding="utf-8") == '["old_queue"]'
+    assert (new_dir / "history.json").read_text(encoding="utf-8") == '["old_history"]'
     assert (new_dir / "cache" / "cache1.txt").read_text(encoding="utf-8") == "old_cache"
     assert (new_dir / "user_adapters" / "adapter1.py").read_text(encoding="utf-8") == "old_adapter"
 
     # Check that legacy data still exists (we don't delete it directly during migration)
     assert (legacy_dir / "queue.json").exists()
     assert (legacy_cache / "cache1.txt").exists()
+    assert (legacy_dir / "queue.json").read_bytes() == (new_dir / "queue.json").read_bytes()
+    assert (legacy_dir / "history.json").read_bytes() == (new_dir / "history.json").read_bytes()
 
 
 def test_migrate_legacy_data_does_not_overwrite(tmp_path, monkeypatch):
@@ -95,18 +104,20 @@ def test_migrate_legacy_data_does_not_overwrite(tmp_path, monkeypatch):
     new_dir.mkdir()
 
     # Create legacy file
-    (legacy_dir / "queue.json").write_text("old_queue", encoding="utf-8")
+    (legacy_dir / "queue.json").write_text('["old_queue"]', encoding="utf-8")
 
     # Create new file (simulate already migrated and used)
-    (new_dir / "queue.json").write_text("new_queue", encoding="utf-8")
+    (new_dir / "queue.json").write_text('["new_queue"]', encoding="utf-8")
 
     # Mock paths
     monkeypatch.setattr(sys, "frozen", False, raising=False)
-    monkeypatch.setattr(app_dirs, "__file__", str(legacy_dir / "app_dirs.py"))
-    monkeypatch.setattr(app_dirs, "get_app_data_dir", lambda: new_dir)
+    monkeypatch.delenv(app_paths.DATA_DIR_ENV)
+    monkeypatch.setattr(app_paths, "legacy_app_dir", lambda: legacy_dir)
+    monkeypatch.setattr(app_paths, "app_data_dir", lambda: new_dir)
 
     # Run migration
     app_dirs.migrate_legacy_data()
 
     # Ensure the new data wasn't overwritten
-    assert (new_dir / "queue.json").read_text(encoding="utf-8") == "new_queue"
+    assert (new_dir / "queue.json").read_text(encoding="utf-8") == '["new_queue"]'
+    assert (legacy_dir / "queue.json").read_text(encoding="utf-8") == '["old_queue"]'
