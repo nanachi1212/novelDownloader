@@ -160,6 +160,9 @@ def test_gui_launcher_shows_and_activates_main_window_before_event_loop(monkeypa
         def processEvents(self):
             real_app.processEvents()
 
+        def setWindowIcon(self, icon):
+            real_app.setWindowIcon(icon)
+
         def exec(self):
             real_app.processEvents()
             visible.extend(window for window in real_app.topLevelWidgets()
