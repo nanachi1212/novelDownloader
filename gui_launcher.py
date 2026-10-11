@@ -37,7 +37,7 @@ from app_logging import configure_logging
 
 def main():
     app = QApplication(sys.argv)
-    icon_root = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent / "packaging"
+    icon_root = Path(sys._MEIPASS) if getattr(sys, "frozen", False) else Path(__file__).resolve().parent / "packaging"
     icon_path = icon_root / "assets" / "morandi" / "app-icon.png"
     if icon_path.is_file():
         app.setWindowIcon(QIcon(str(icon_path)))
