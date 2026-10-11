@@ -27,6 +27,7 @@ STATE_FILES = {
     "preferences.json": dict,
     "site_settings.json": dict,
     "history.json": list,
+    "fanqie_bridge.json": dict,
 }
 _prepared = set()
 _notices = {}
@@ -131,7 +132,7 @@ def _legacy_files(source):
             f"Cannot inspect legacy application data directory: {source}: {exc}"
         ) from exc
     roots = [source / name for name in STATE_FILES]
-    roots += [source / "cache", source / "user_adapters"]
+    roots += [source / name for name in ("cache", "user_adapters", "preview", "fanqie-bridge")]
     try:
         roots += sorted(
             child for child in source.iterdir()

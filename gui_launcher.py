@@ -4,7 +4,7 @@ import sys
 import logging
 from pathlib import Path
 
-# PyInstaller onefile 的模組在 _MEIPASS，使用者資料則應放在 EXE 旁。
+# PyInstaller onefile 的模組在 _MEIPASS，使用者資料由 app_paths 放在使用者目錄。
 if getattr(sys, "frozen", False):
     app_dir = Path(sys.executable).parent
     bundle_dir = Path(getattr(sys, "_MEIPASS", app_dir))

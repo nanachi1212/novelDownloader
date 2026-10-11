@@ -33,6 +33,11 @@ def test_migrates_all_data_and_keeps_original_bytes(tmp_path):
         "filter_rules_example_test.txt": "site ad",
         "novelDownloader.log": "previous log",
         "novelDownloader.log.1": "older log",
+        "fanqie_bridge.json": '{"tomato_exe":"D:/Tools/Tomato.exe"}',
+        "fanqie-bridge/data/config.yml": "novel_format: txt",
+        "fanqie-bridge/bridge.log": "previous bridge log",
+        "fanqie-bridge/library/book.txt": "provider export",
+        "preview/fanqie/book/item/raw_text.json": '{"text":"preview"}',
     }
     for relative, content in files.items():
         put(old, relative, content)

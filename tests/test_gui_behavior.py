@@ -27,6 +27,7 @@ def make_window(monkeypatch, tmp_path):
     app = QApplication.instance() or QApplication([])
     monkeypatch.setenv("NOVELDOWNLOADER_DATA_DIR", str(tmp_path))
     monkeypatch.setattr(QSystemTrayIcon, "isSystemTrayAvailable", lambda: False)
+
     window = main_window.NovelDownloaderUI()
     return app, window
 

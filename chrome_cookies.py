@@ -14,6 +14,8 @@ import time
 import urllib.request
 from pathlib import Path
 
+from app_paths import prepare_app_data
+
 CHROME_CANDIDATES = (
     r"%PROGRAMFILES%\Google\Chrome\Application\chrome.exe",
     r"%PROGRAMFILES(X86)%\Google\Chrome\Application\chrome.exe",
@@ -76,7 +78,9 @@ class ChromeCookieSession:
         if browser is None:
             raise ChromeCookieError("找不到 Chrome 或 Edge,請改用手動貼上 Cookie")
         self.port = _free_port()
-        self.profile = Path(tempfile.mkdtemp(prefix="novel_dl_chrome_"))
+        profiles = prepare_app_data() / "browser_profiles"
+        profiles.mkdir(parents=True, exist_ok=True)
+        self.profile = Path(tempfile.mkdtemp(prefix="novel_dl_chrome_", dir=profiles))
         self.process = subprocess.Popen([
             str(browser),
             f"--remote-debugging-port={self.port}",
