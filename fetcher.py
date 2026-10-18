@@ -16,6 +16,8 @@ JS_REDIRECT = re.compile(
     r"window\.location\.href\s*=\s*(['\"])(?P<url>[^'\"]+)\1", re.I
 )
 MAX_JS_REDIRECTS = 5
+MAX_HTTP_REDIRECTS = 10
+HTTP_REDIRECT_CODES = (301, 302, 303, 307, 308)
 MAX_BACKOFF_DELAY = 60.0      # 429/503 退避上限,避免一次卡住數分鐘
 MAX_RATE_LIMIT_HITS = 6       # 單次請求最多容忍幾次限速回應
 HUMAN_CHECK = re.compile(r"human verification|g-recaptcha|hcaptcha", re.I)
@@ -75,16 +77,33 @@ class FetchError(RuntimeError):
     pass
 
 
+def cookie_allowed(url, cookie_domain):
+    """匯入的 Cookie 是登入憑證:只送 HTTPS,且網址必須屬於該網域(或其子網域)。"""
+    parsed = urlparse(url)
+    if parsed.scheme != "https":
+        return False
+    if cookie_domain is None:
+        return True
+    host = (parsed.hostname or "").lower()
+    domain = str(cookie_domain).lower().lstrip(".")
+    return bool(domain) and (host == domain or host.endswith("." + domain))
+
+
 class Fetcher:
     def __init__(self, encoding="utf-8", delay=2.0, impersonate="chrome131", headers=None,
-                 timeout=20, throttle=None):
+                 timeout=20, throttle=None, cookie_domain=None):
         # encoding=None 表示依回應自動偵測(HTTP 標頭 → meta charset → utf-8/gbk 試錯)
         self.session = requests.Session(impersonate=impersonate)
         self.encoding = encoding
         self.delay = delay
         self.last_url = None  # 自動當下一次請求的 Referer
         self.throttle = throttle or Throttle(delay)  # 429 退避狀態,可跨 worker 共用
-        self.extra_headers = headers or {}
+        self.extra_headers = dict(headers or {})
+        # Cookie 每次請求再依網址決定是否附上;標頭名稱不分大小寫,全部取出。
+        self.cookie = ""
+        for key in [k for k in self.extra_headers if k.lower() == "cookie"]:
+            self.cookie = self.extra_headers.pop(key) or self.cookie
+        self.cookie_domain = cookie_domain
         self.timeout = max(1, float(timeout))
         self.last_response_headers = {}
         self.last_status_code = None
@@ -118,10 +137,26 @@ class Fetcher:
             attempt += 1
             try:
                 current_url = url
-                for redirect_count in range(MAX_JS_REDIRECTS + 1):
-                    r = self.session.get(current_url, headers=headers, timeout=self.timeout)
+                js_hops = http_hops = 0
+                while True:
+                    headers.pop("Cookie", None)
+                    if self.cookie and cookie_allowed(current_url, self.cookie_domain):
+                        headers["Cookie"] = self.cookie
+                    # 自己處理 30x,讓每一跳都重新檢查 Cookie 是否可送(curl 換網域會直接丟掉)。
+                    r = self.session.get(current_url, headers=headers, timeout=self.timeout,
+                                         allow_redirects=False)
                     self.last_response_headers = dict(r.headers)
                     self.last_status_code = r.status_code
+                    location = r.headers.get("Location") or r.headers.get("location")
+                    if r.status_code in HTTP_REDIRECT_CODES and location:
+                        next_url = urljoin(current_url, location)
+                        if urlparse(next_url).scheme not in ("http", "https"):
+                            raise FetchError(f"不支援的跳轉網址: {next_url}")
+                        if http_hops == MAX_HTTP_REDIRECTS:
+                            raise FetchError(f"HTTP 跳轉超過 {MAX_HTTP_REDIRECTS} 次: {url}")
+                        http_hops += 1
+                        current_url = next_url
+                        continue
                     text = self._decode(r)
 
                     # Some reader sites return a tiny HTML page whose only useful action is
@@ -131,13 +166,14 @@ class Fetcher:
                     if redirect and urlparse(urljoin(current_url, redirect.group("url"))).scheme not in ("http", "https"):
                         redirect = None
                     if r.status_code == 200 and redirect:
-                        if redirect_count == MAX_JS_REDIRECTS:
+                        if js_hops == MAX_JS_REDIRECTS:
                             raise FetchError(
                                 f"JavaScript 跳轉超過 {MAX_JS_REDIRECTS} 次: {url}"
                             )
                         next_url = urljoin(current_url, redirect.group("url"))
                         if next_url == current_url:
                             raise FetchError(f"JavaScript 跳轉指向自身: {current_url}")
+                        js_hops += 1
                         headers["Referer"] = current_url
                         current_url = next_url
                         continue

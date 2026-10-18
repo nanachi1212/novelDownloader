@@ -14,7 +14,7 @@ class XbanxiaAdapter(SiteAdapter):
         m = re.search(r"/books/(\d+)", url)
         if not m:
             raise ValueError(f"無法解析 xbanxia URL: {url}")
-        return f"http://www.xbanxia.cc/books/{m.group(1)}.html"
+        return f"https://www.xbanxia.cc/books/{m.group(1)}.html"
 
     def book_id(self, url: str) -> str:
         """從 URL 中提取書籍 ID（含站點名稱）"""
@@ -73,7 +73,7 @@ class XbanxiaAdapter(SiteAdapter):
                 chapter_title = link.get_text().strip()
                 chapter_url = link.get("href", "")
                 if not chapter_url.startswith("http"):
-                    chapter_url = urljoin("http://www.xbanxia.cc", chapter_url)
+                    chapter_url = urljoin("https://www.xbanxia.cc", chapter_url)
                 if chapter_title:
                     # 提取 cid 以便排序
                     cid_match = re.search(r"/(\d+)\.html", chapter_url)

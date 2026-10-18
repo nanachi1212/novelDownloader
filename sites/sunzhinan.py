@@ -1,4 +1,5 @@
 """醋溜儿文学 (sunzhinan.com) adapter"""
+import re
 from urllib.parse import urljoin, urlparse
 from bs4 import BeautifulSoup
 from .base import SiteAdapter, BookInfo, Chapter
@@ -28,7 +29,8 @@ class SunzhinanAdapter(SiteAdapter):
         path = parsed.path.rstrip("/")
         if "/books/" in path or "/read/" in path:
             parts = path.split("/")
-            return f"sunzhinan-{parts[2]}"
+            if len(parts) > 2 and re.fullmatch(r"[0-9A-Za-z_-]+", parts[2]):
+                return f"sunzhinan-{parts[2]}"
         raise ValueError(f"無法解析 sunzhinan URL: {url}")
 
     def parse_catalog(self, html: str) -> BookInfo:
