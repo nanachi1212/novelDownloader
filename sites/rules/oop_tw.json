@@ -4,7 +4,7 @@
   "encoding": null,
   "max_chapter_workers": 2,
   "url": {
-    "book_id_regex": "/(?:abooka|areada)/(?P<book_id>[^/]+)/",
+    "book_id_regex": "/(?:abooka|areada)/(?P<book_id>[0-9A-Za-z]+)/",
     "catalog_template": "https://www.oop.tw/abooka/{book_id}/",
     "cache_id_template": "oop-tw-{book_id}"
   },

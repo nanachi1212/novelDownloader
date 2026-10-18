@@ -75,16 +75,30 @@ class FetchError(RuntimeError):
     pass
 
 
+def cookie_allowed(url, cookie_domain):
+    """匯入的 Cookie 是登入憑證:只送 HTTPS,且網址必須屬於該網域(或其子網域)。"""
+    parsed = urlparse(url)
+    if parsed.scheme != "https":
+        return False
+    if cookie_domain is None:
+        return True
+    host = (parsed.hostname or "").lower()
+    domain = str(cookie_domain).lower().lstrip(".")
+    return bool(domain) and (host == domain or host.endswith("." + domain))
+
+
 class Fetcher:
     def __init__(self, encoding="utf-8", delay=2.0, impersonate="chrome131", headers=None,
-                 timeout=20, throttle=None):
+                 timeout=20, throttle=None, cookie_domain=None):
         # encoding=None 表示依回應自動偵測(HTTP 標頭 → meta charset → utf-8/gbk 試錯)
         self.session = requests.Session(impersonate=impersonate)
         self.encoding = encoding
         self.delay = delay
         self.last_url = None  # 自動當下一次請求的 Referer
         self.throttle = throttle or Throttle(delay)  # 429 退避狀態,可跨 worker 共用
-        self.extra_headers = headers or {}
+        self.extra_headers = dict(headers or {})
+        self.cookie = self.extra_headers.pop("Cookie", "")  # 每次請求再依網址決定是否附上
+        self.cookie_domain = cookie_domain
         self.timeout = max(1, float(timeout))
         self.last_response_headers = {}
         self.last_status_code = None
@@ -119,6 +133,9 @@ class Fetcher:
             try:
                 current_url = url
                 for redirect_count in range(MAX_JS_REDIRECTS + 1):
+                    headers.pop("Cookie", None)
+                    if self.cookie and cookie_allowed(current_url, self.cookie_domain):
+                        headers["Cookie"] = self.cookie
                     r = self.session.get(current_url, headers=headers, timeout=self.timeout)
                     self.last_response_headers = dict(r.headers)
                     self.last_status_code = r.status_code

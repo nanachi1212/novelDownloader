@@ -43,6 +43,15 @@ def cache_root() -> Path:
     return prepare_app_data() / "cache"
 
 
+def book_cache_dir(book_id: str) -> Path:
+    """書籍快取資料夾。book_id 來自網址,必須是 cache_root 底下單一層名稱。"""
+    root = cache_root().resolve()
+    cache = (root / book_id).resolve()
+    if "/" in book_id or "\\" in book_id or cache.parent != root:
+        raise ValueError(f"不安全的書籍快取名稱: {book_id!r}")
+    return cache
+
+
 def safe_filename(name: str) -> str:
     cleaned = re.sub(r'[\\/:*?"<>|\x00-\x1f]', "_", name).strip().rstrip(". ")
     reserved = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
@@ -404,7 +413,7 @@ def write_txt_from_files(path, header, chapters, transform=None):
 def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
                    start=None, end=None, cancel_check=None, retries=5,
                    output_format="txt", filename_format="title", request_headers=None,
-                   timeout=20, chapter_workers=3, full_text_provider=None):
+                   timeout=20, chapter_workers=3, full_text_provider=None, cookie_domain=None):
     """下載小說並輸出 TXT,回傳輸出檔路徑。
 
     full_text_provider:Web 來源拿不到完整正文時的本機 provider(fanqie_bridge);
@@ -421,7 +430,10 @@ def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
         provider = adapter.default_full_text_provider()
     adapter.full_text_provider_active = provider is not None
     request_headers = {**adapter.default_request_headers(), **(request_headers or {})}
-    fetcher = Fetcher(encoding=adapter.encoding, delay=delay, headers=request_headers, timeout=timeout)
+    # Cookie 只送給所屬網域的 HTTPS 請求;未指定時以下載網址的網域為準。
+    cookie_domain = cookie_domain or urlparse(url).hostname
+    fetcher = Fetcher(encoding=adapter.encoding, delay=delay, headers=request_headers, timeout=timeout,
+                      cookie_domain=cookie_domain)
     request_retries = min(retries, getattr(adapter, "max_request_retries", retries))
 
     callback("catalog", 0, 1, "正在抓取目錄...")
@@ -545,7 +557,7 @@ def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
 
     # 有合併發生時快取換一個命名空間,避免舊快取(依合併前的章節位置編號)
     # 對不上合併後的新章節順序。
-    cache = cache_root() / (adapter.book_id(url) + ("-merged" if merged else ""))
+    cache = book_cache_dir(adapter.book_id(url) + ("-merged" if merged else ""))
     cache.mkdir(parents=True, exist_ok=True)
     prior_progress = read_json(cache / "progress.json", {})
     adapter.restore_cache_state(cache)
@@ -586,7 +598,7 @@ def download_novel(url, output_dir, title_override="", delay=2.0, callback=None,
             return worker_local.fetcher
         child = Fetcher(
             encoding=adapter.encoding, delay=delay, headers=request_headers, timeout=timeout,
-            throttle=fetcher.throttle)  # 共用退避狀態:一個 worker 被 429,全部一起放慢
+            throttle=fetcher.throttle, cookie_domain=cookie_domain)  # 共用退避狀態:一個 worker 被 429,全部一起放慢
         try:
             child.session.cookies.update(fetcher.session.cookies)
         except (AttributeError, TypeError):

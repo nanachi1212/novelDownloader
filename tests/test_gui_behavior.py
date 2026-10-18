@@ -313,9 +313,10 @@ def test_job_log_tabs_track_title_and_removal(monkeypatch, tmp_path):
 
 
 class FakeCookie:
-    def __init__(self, name, value):
+    def __init__(self, name, value, domain=".69shuba.tw"):
         self.name = name
         self.value = value
+        self.domain = domain
 
 
 def test_browser_cookie_import_falls_back_to_next_browser():

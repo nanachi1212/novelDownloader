@@ -47,7 +47,7 @@ from adapter_tools import (
     adapter_is_enabled,
     disable_adapter,
 )
-from chrome_cookies import ChromeCookieSession
+from chrome_cookies import ChromeCookieSession, cookies_to_header
 from textfilter import ensure_rules_file, rules_path
 from state_io import LatestJsonWriter, read_json, write_json
 from app_paths import prepare_app_data
@@ -117,7 +117,11 @@ def read_browser_cookies(host, module):
             continue
         label = COOKIE_BROWSER_LABEL.get(name, name)
         try:
-            header = "; ".join(f"{c.name}={c.value}" for c in reader(domain_name=host))
+            # browser_cookie3 以子字串篩網域(LIKE %host%),必須再依網域邊界過濾,
+            # 否則 acebook.co 會讀到 .facebook.com 的登入 Cookie。
+            header = cookies_to_header(
+                [{"name": c.name, "value": c.value, "domain": c.domain}
+                 for c in reader(domain_name=host)], host)
         except Exception as exc:
             problems.append(f"{label}：{cookie_error_hint(exc)}")
             continue
@@ -166,7 +170,8 @@ def queue_job_from_row(row):
     return {
         "url": row["url"], "title": row.get("title", ""),
         "start": row.get("start"), "end": row.get("end"), "status": status,
-        "site_key": row.get("site_key") or site_key_for_url(row["url"]),
+        # site_key 決定送哪個網站的 Cookie,不能信任檔案內容,一律由網址重算。
+        "site_key": site_key_for_url(row["url"]),
         "id": row.get("id") or uuid.uuid4().hex,
     }
 
@@ -335,6 +340,7 @@ class QueueThread(QThread):
                     retries=self.retries, output_format=self.output_format,
                     filename_format=self.filename_format,
                     request_headers=request_headers,
+                    cookie_domain=job.get("site_key"),
                     timeout=self.timeout,
                     chapter_workers=self.chapter_workers,
                 )
