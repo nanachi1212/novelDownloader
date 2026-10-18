@@ -15,7 +15,7 @@ class FakeSession:
         self.responses = iter(responses)
         self.calls = []
 
-    def get(self, url, headers, timeout):
+    def get(self, url, headers, timeout, **_kwargs):
         self.calls.append((url, dict(headers), timeout))
         return next(self.responses)
 

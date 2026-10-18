@@ -62,3 +62,27 @@ def test_adapters_reject_traversal_book_ids():
     assert oop.book_id("https://www.oop.tw/abooka/a31674962a/") == "oop-tw-a31674962a"
     assert get_adapter("https://www.xbanxia.cc/books/1.html").catalog_url(
         "http://www.xbanxia.cc/books/1.html").startswith("https://")
+
+
+def test_fetcher_rechecks_cookie_on_each_http_redirect():
+    fetcher = Fetcher(headers={"Cookie": "sid=1"}, cookie_domain="site.example")
+    fetcher.session = FakeSession([
+        FakeResponse("", 301, {"Location": "https://www.site.example/book"}),
+        FakeResponse("", 302, {"Location": "https://other.example/book"}),
+        FakeResponse("<html><body>正文</body></html>"),
+    ])
+    fetcher.get("https://site.example/book")
+    sent = [call[1].get("Cookie") for call in fetcher.session.calls]
+    assert sent == ["sid=1", "sid=1", None]
+
+
+def test_fetcher_treats_cookie_header_name_case_insensitively():
+    fetcher = Fetcher(headers={"cookie": "sid=1"}, cookie_domain="site.example")
+    fetcher.session = FakeSession([
+        FakeResponse('<script>window.location.href = "https://other.example/c";</script>'),
+        FakeResponse("<html><body>正文</body></html>"),
+    ])
+    fetcher.get("https://site.example/book")
+    first, second = (call[1] for call in fetcher.session.calls)
+    assert first["Cookie"] == "sid=1"
+    assert not any(key.lower() == "cookie" for key in second)
