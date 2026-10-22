@@ -60,9 +60,12 @@ class Shuku52Adapter(SiteAdapter):
 
     def parse_chapter(self, html: str, title: str = "") -> str:
         soup = BeautifulSoup(html, "lxml")
-        node = soup.select_one("article#nr1")
+        # 舊版型 article#nr1；現行版型正文在 article.article-content 裡的 #text
+        node = (soup.select_one("article#nr1")
+                or soup.select_one("article.article-content #text")
+                or soup.select_one("article.article-content"))
         if node is None:
-            raise ValueError("閱讀頁找不到內文(article#nr1),網站版型可能已改")
+            raise ValueError("閱讀頁找不到內文(article#nr1／#text),網站版型可能已改")
         for tag in node.select("script, style, ins, iframe, form, nav, a, .contentadv, .adsbygoogle"):
             tag.decompose()
 

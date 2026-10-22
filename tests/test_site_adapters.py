@@ -164,7 +164,8 @@ def test_book8_catalog_and_chapter_parsing():
     book = adapter.parse_catalog(catalog)
     assert (book.title, book.author) == ("旺福小娘子", "燕小陌")
     assert [chapter.title for chapter in book.chapters] == ["第一章 五福", "第二章 停下你的豬手"]
-    assert book.chapters[0].url == "https://finance.binaccount.com/read/131302/?2374669"
+    # finance.binaccount.com 是別的網站，章節正文頁一律改寫回 www.8book.com
+    assert book.chapters[0].url == "https://www.8book.com/read/131302/?2374669"
     assert adapter.catalog_url("https://finance.binaccount.com/read/131302/?2374669") == (
         "https://www.8book.com/novelbooks/131302/"
     )
@@ -176,8 +177,9 @@ def test_book8_catalog_and_chapter_parsing():
     <meta name="catid" content="4">
     <div id="text"></div>
     <script>
-      var nk____=100;var pe682qj=7;var ea8v8420=3;var t8pj3yk__=5;
-      var hni2v2c31="2374669,432587752999513611237679581452598879933973788962629829875391639941164467726488153983367819574344384789736321449624875678".split(',');
+      var q7z__=100;var w2k9=3;var m4r_x=5;
+      var zz81a="2374669,432587752999513611237679581452598879933973788962629829875391639941164467726488153983367819574344384789736321449624875678".split(',');
+      var cid=2374669;var tail=zz81a[zz81a.length-1].substr(cid*w2k9%q7z__,m4r_x);
     </script>
     """
     assert adapter.chapter_source_url(reader, "https://finance.binaccount.com/read/131302/?2374669") == (
