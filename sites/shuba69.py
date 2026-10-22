@@ -24,7 +24,9 @@ class Shuba69(SiteAdapter):
         "69shuba.tw",
         "www.69shuba.tw",
     ]
-    encoding = "gbk"
+    # 舊站 69shuba.com 是 GBK，新 69shuba.tw 已改 UTF-8；Fetcher 在建立時還不知道網址，
+    # 交給它依標頭／meta charset 自動判斷（判斷不出時 utf-8 解不開會退回 gbk）。
+    encoding = None
     # 1.5.6 逐章共用同一 session；69shuba 需要保留這個行為。
     max_chapter_workers = 1
 
@@ -90,9 +92,10 @@ class Shuba69(SiteAdapter):
 
     def parse_chapter(self, html: str, title: str = "") -> str:
         soup = BeautifulSoup(html, "lxml")
-        node = soup.select_one("div.txtnav")
+        # 69shuba.tw 改用手機版型，正文在 #nr1
+        node = soup.select_one("div.txtnav") or soup.select_one("#nr1")
         if node is None:
-            raise ValueError("章節頁找不到內文(div.txtnav),網站版型可能已改")
+            raise ValueError("章節頁找不到內文(div.txtnav／#nr1),網站版型可能已改")
         # 結構過濾:標題、資訊列、廣告區塊全部移除
         for sel in ("h1", ".txtinfo", ".txtright", ".contentadv", ".bottom-ad",
                     "script", "style", "ins", "iframe", "a"):

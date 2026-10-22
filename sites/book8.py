@@ -11,6 +11,9 @@ AD_LINE_RE = re.compile(
     r"8book|無限小說|請記住本站|加入書簽|章節列表|報錯|開燈|關燈|本章未完",
     re.I,
 )
+FORMULA_RE = re.compile(
+    r"(\w+)\[\1\.length-\w+\]\.substr\(\w+\s*\*\s*(\w+)\s*%\s*(\w+)\s*,\s*(\w+)\)"
+)
 
 
 class Book8Adapter(SiteAdapter):
@@ -68,7 +71,8 @@ class Book8Adapter(SiteAdapter):
             if not re.search(r"/read/\d+/", parsed.path) or not parsed.query.isdigit():
                 continue
             seen.add(href)
-            chapters.append(Chapter(text, href))
+            # 目錄連結可能指到 finance.binaccount.com（別的網站），章節正文頁在 www.8book.com
+            chapters.append(Chapter(text, f"https://www.8book.com{parsed.path}?{parsed.query}"))
 
         if not chapters:
             raise ValueError("目錄頁找不到章節連結(/read/{book_id}/?{chapter_id}),網站版型可能已改")
@@ -81,9 +85,9 @@ class Book8Adapter(SiteAdapter):
         return tag.get("content", "").strip() if tag else default
 
     @staticmethod
-    def _js_int(html: str, name: str, default: int) -> int:
+    def _js_int(html: str, name: str):
         match = re.search(rf"var\s+{re.escape(name)}\s*=\s*(\d+)", html)
-        return int(match.group(1)) if match else default
+        return int(match.group(1)) if match else None
 
     def chapter_source_url(self, html: str, url: str):
         soup = BeautifulSoup(html, "lxml")
@@ -100,14 +104,19 @@ class Book8Adapter(SiteAdapter):
         if not chapter_id:
             return None
 
-        ids_match = re.search(r'var\s+hni2v2c31\s*=\s*"([^"]+)"\.split', html)
-        if ids_match is None:
+        # 網站每次換 JS 變數名，舊的固定名稱已失效；改從
+        # `ids[ids.length-1].substr(id * 乘數 % 模數, 長度)` 這個算式反推變數名
+        formula = FORMULA_RE.search(html)
+        if formula is None:
+            return None
+        ids_var, ea_var, nk_var, len_var = formula.groups()
+        ids_match = re.search(rf'var\s+{re.escape(ids_var)}\s*=\s*"([^"]*)"', html)
+        ea = self._js_int(html, ea_var)
+        nk = self._js_int(html, nk_var)
+        suffix_len = self._js_int(html, len_var)
+        if ids_match is None or ea is None or not nk or suffix_len is None:
             return None
         secret = ids_match.group(1).split(",")[-1]
-        pe = self._js_int(html, "pe682qj", 7)
-        ea = self._js_int(html, "ea8v8420", 3)
-        nk = self._js_int(html, "nk____", 100)
-        suffix_len = self._js_int(html, "t8pj3yk__", 5)
         start = (int(chapter_id) * ea) % nk
         suffix = secret[start:start + suffix_len]
         if not suffix:
